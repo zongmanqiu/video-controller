@@ -38,6 +38,13 @@
 - 4 页设置面板，记住上次关闭的标签页
 - B站切集保留倍速/音量/亮度
 
+## 截图
+
+![基础](https://gitee.com/qiuzongman/video-controller/raw/master/image/基础.png)
+![工具](https://gitee.com/qiuzongman/video-controller/raw/master/image/工具.png)
+![自动](https://gitee.com/qiuzongman/video-controller/raw/master/image/自动.png)
+![说明](https://gitee.com/qiuzongman/video-controller/raw/master/image/说明.png)
+
 ## 适用网站
 
 所有使用 HTML5 `<video>` 播放器的网站。
