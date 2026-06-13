@@ -895,7 +895,7 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
   </div>
 </div></div>
 <div id="vc-page4" style="display:none">
-<div style="font-weight:bold;font-size:13px;color:#444;margin-bottom:6px">视频控制器 v1.0.7</div>
+<div style="font-weight:bold;font-size:13px;color:#444;margin-bottom:6px">视频控制器 v1.1.0</div>
 <div style="display:grid;grid-template-columns:52px 1fr;column-gap:6px;row-gap:2px">
 <span style="color:#555">作者</span><span><a href="https://space.bilibili.com/423767625" target="_blank" style="color:#1a73e8">邱宗满</a></span>
 <span style="color:#555">邮箱</span><span>qiuzongman@foxmail.com</span>
