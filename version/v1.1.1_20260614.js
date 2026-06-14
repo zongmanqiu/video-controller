@@ -183,7 +183,7 @@
                 'max-width: 60%; min-width: 150px; padding: 0 14px;',
                 'height: 40px; color: #fff; line-height: 40px;',
                 'text-align: center; border-radius: 8px;',
-                'position: absolute; top: 50%; left: 50%;',
+                'position: fixed; top: 50%; left: 50%;',
                 'transform: translate(-50%, -50%);',
                 'z-index: 2147483647;',
                 'background: rgba(0,0,0,0.78);',
@@ -192,8 +192,7 @@
             ].join('');
             document.body.appendChild(_toastEl);
         }
-        var host = document.fullscreenElement || document.body;
-        if (_toastEl.parentNode !== host) host.appendChild(_toastEl);
+        // toast 位置由 fullscreenchange 事件控制，此处不动
         _toastEl.textContent = msg;
         _toastEl.style.opacity = '1';
         _toastEl.style.display = '';
@@ -435,7 +434,7 @@
             if (!el || el === document.body) el = video;
             video._vcSFOrigCss = el.style.cssText;
             video._vcSFParent = el;
-            el.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:2147483647;background:#000';
+            el.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:2147483646;background:#000';
             Toast('进入网页全屏');
         }
     }
