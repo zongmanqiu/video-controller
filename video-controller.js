@@ -2,13 +2,13 @@
 // @name         视频控制器
 // @namespace    video-controller
 // @description  80KB的极简视频控制器，适配HTML5播放器。支持倍速（0.25x–16x）、音量增强（最高5x）、亮度增强（最高3x）。常规快捷键操作：倍速/快进/音量/逐帧/亮度/画面缩放。此外，支持屏幕全屏/网页全屏/旋转90°/水平翻转/画面拖动/截图/画中画/纯净模式，支持自动记忆网站设置/全局自动设置/色彩模式更改/区间循环播放。
-// @version      1.1.2
+// @version      1.1.3
 // @license      MIT
 // @author       Qiu Zongman
 // @homepageURL  https://gitee.com/qiuzongman/video-controller
 // @updateURL    https://gitee.com/qiuzongman/video-controller/raw/master/video-controller.js
 // @downloadURL  https://gitee.com/qiuzongman/video-controller/raw/master/video-controller.js
-// @icon         https://gitee.com/qiuzongman/video-controller/raw/master/icon.png
+// @icon         data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTI5OSIgaGVpZ2h0PSIxMjk5IiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHhtbG5zOnhsaW5rPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5L3hsaW5rIiB4bWw6c3BhY2U9InByZXNlcnZlIiBvdmVyZmxvdz0iaGlkZGVuIj48ZyB0cmFuc2Zvcm09Im1hdHJpeCgxIDAgMCAxIDAgLTY1NCkiPjxyZWN0IHg9IjAiIHk9IjY1NCIgd2lkdGg9IjEyOTkiIGhlaWdodD0iMTI5OSIgZmlsbD0iIzAwNzBDMCIvPjxwYXRoIGQ9Ik00NjIgMTAwMiA5ODEgMTMwMy41IDQ2MiAxNjA1WiIgc3Ryb2tlPSIjRkZGRkZGIiBzdHJva2Utd2lkdGg9IjkxLjY2NjciIHN0cm9rZS1saW5lam9pbj0icm91bmQiIHN0cm9rZS1taXRlcmxpbWl0PSIxMCIgZmlsbD0iI0ZGRkZGRiIgZmlsbC1ydWxlPSJldmVub2RkIi8+PC9nPjwvc3ZnPg==
 // @match        *://*/*
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -914,7 +914,7 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
   </div>
 </div></div>
 <div id="vc-page4" style="display:none">
-<div style="font-weight:bold;font-size:13px;color:#444;margin-bottom:6px">视频控制器 v1.1.2</div>
+<div style="font-weight:bold;font-size:13px;color:#444;margin-bottom:6px">视频控制器 v1.1.3</div>
 <div style="display:grid;grid-template-columns:52px 1fr;column-gap:6px;row-gap:2px">
 <span style="color:#555">作者</span><span><a href="https://space.bilibili.com/423767625" target="_blank" style="color:#1a73e8">邱宗满</a></span>
 <span style="color:#555">邮箱</span><span>qiuzongman@foxmail.com</span>
