@@ -2,7 +2,7 @@
 // @name         视频控制器
 // @namespace    video-controller
 // @description  80KB的极简视频控制器，适配HTML5播放器。支持倍速（0.25x–16x）、音量增强（最高5x）、亮度增强（最高3x）。常规快捷键操作：倍速/快进/音量/逐帧/亮度/画面缩放。此外，支持屏幕全屏/网页全屏/旋转90°/水平翻转/画面拖动/截图/画中画/纯净模式，支持自动记忆网站设置/全局自动设置/色彩模式更改/区间循环播放。
-// @version      1.1.1
+// @version      1.1.2
 // @license      MIT
 // @author       Qiu Zongman
 // @homepageURL  https://gitee.com/qiuzongman/video-controller
@@ -419,13 +419,23 @@
     }
 
     function toggleScreenFull(video) {
-        var p = video._vcSFParent;
-        if (p) {
-            p.style.cssText = video._vcSFOrigCss || '';
+        var btn = document.querySelector('.bpx-player-ctrl-web,.dplayer-full-icon[data-name="web"],.vjs-remaining-time,.plyr__control[data-plyr="fullscreen"][data-size="small"],[aria-label="网页全屏"],[title="网页全屏"]');
+        if (btn) { btn.click(); return; }
+        // fallback: 包裹式网页全屏
+        if (video._vcSFParent) {
+            // 退出：拆包裹
+            var wrap = video._vcSFParent;
+            var inner = wrap.firstChild;
+            if (inner) {
+                wrap.parentElement.insertBefore(inner, wrap);
+                inner.style.cssText = video._vcSFOrigCss || '';
+            }
+            wrap.remove();
             video._vcSFParent = null;
             video._vcSFOrigCss = null;
             Toast('退出网页全屏');
         } else {
+            // 进入：用包裹元素实现全屏，不改变容器本身的样式
             var el = video.parentElement;
             for (var i = 0; i < 5 && el; i++) {
                 if (el.querySelectorAll('video').length >= 1 && el.offsetWidth > 200) break;
@@ -433,8 +443,11 @@
             }
             if (!el || el === document.body) el = video;
             video._vcSFOrigCss = el.style.cssText;
-            video._vcSFParent = el;
-            el.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:2147483646;background:#000';
+            var wrap = document.createElement('div');
+            wrap.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:2147483646;background:#000';
+            el.parentElement.insertBefore(wrap, el);
+            wrap.appendChild(el);
+            video._vcSFParent = wrap;
             Toast('进入网页全屏');
         }
     }
@@ -678,10 +691,14 @@
         if (m(settings.brightnessUp)) { changeBrightness(video, settings.brightnessStep); handled = true; }
         if (m(settings.brightnessDown)) { changeBrightness(video, -settings.brightnessStep); handled = true; }
         if (m(settings.fullscreen)) {
-            var wasFull = !!document.fullscreenElement;
-            if (wasFull) { document.exitFullscreen().catch(function(){}); }
-            else { video.requestFullscreen().catch(function(){}); }
-            Toast(wasFull ? '退出屏幕全屏' : '屏幕全屏'); handled = true;
+            var fsBtn = document.querySelector('.bpx-player-ctrl-full,.dplayer-full-icon,.vjs-fullscreen-control,.jw-icon-fullscreen,.plyr__control[data-plyr="fullscreen"],.mejs-fullscreen-button,.video-js .vjs-fullscreen-control,[aria-label="全屏"],[aria-label="Fullscreen"],[title="全屏"],[title="Fullscreen"]');
+            if (fsBtn) { fsBtn.click(); handled = true; }
+            else {
+                var wasFull = !!document.fullscreenElement;
+                if (wasFull) { document.exitFullscreen().catch(function(){}); }
+                else { video.requestFullscreen().catch(function(){}); }
+                Toast(wasFull ? '退出屏幕全屏' : '屏幕全屏'); handled = true;
+            }
         }
         if (m(settings.screenshot)) { screenshot(video); handled = true; }
         if (m(settings.rotateKey)) { autoRotate(video); handled = true; }
@@ -721,14 +738,17 @@
             'transform: translate(-50%, -50%);',
             'background: #fff; padding: 20px;',
             'border: 2px solid #555; border-radius: 8px;',
-            'z-index: 2147483646; width: 560px;',
+            'z-index: 2147483647; width: 560px;',
             'max-height: 85vh;',
             'display: flex; flex-direction: column;',
             '--vc-fs: 13px; font-size: 13px;',
             'pointer-events: auto;'
         ].join('');
         panel.innerHTML = buildSettingsHTML();
-        (document.fullscreenElement || document.body).appendChild(panel);
+        var host = document.fullscreenElement || document.body;
+        // 视频元素全屏时不显示子节点，改用其父容器
+        if (host && host.tagName === 'VIDEO') host = host.parentElement;
+        host.appendChild(panel);
         bindSettingsEvents(panel);
     }
 
@@ -894,7 +914,7 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
   </div>
 </div></div>
 <div id="vc-page4" style="display:none">
-<div style="font-weight:bold;font-size:13px;color:#444;margin-bottom:6px">视频控制器 v1.1.1</div>
+<div style="font-weight:bold;font-size:13px;color:#444;margin-bottom:6px">视频控制器 v1.1.2</div>
 <div style="display:grid;grid-template-columns:52px 1fr;column-gap:6px;row-gap:2px">
 <span style="color:#555">作者</span><span><a href="https://space.bilibili.com/423767625" target="_blank" style="color:#1a73e8">邱宗满</a></span>
 <span style="color:#555">邮箱</span><span>qiuzongman@foxmail.com</span>
@@ -1323,9 +1343,13 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
 
         document.addEventListener('fullscreenchange', function () {
             var host = document.fullscreenElement || document.body;
+            if (host.tagName === 'VIDEO') host = host.parentElement;
             if (_toastEl && _toastEl.parentNode !== host) host.appendChild(_toastEl);
             var pnl = document.getElementById('vc-settings-panel');
-            if (pnl && pnl.parentNode !== host) host.appendChild(pnl);
+            if (pnl && pnl.parentNode !== host) {
+                host.appendChild(pnl);
+                pnl.style.zIndex = '2147483647';
+            }
         });
 
         document.addEventListener('keydown', onKeyDown, true);
