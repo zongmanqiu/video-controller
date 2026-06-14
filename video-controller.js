@@ -2,7 +2,7 @@
 // @name         视频控制器
 // @namespace    video-controller
 // @description  80KB的极简视频控制器，适配HTML5播放器。支持倍速（0.25x–16x）、音量增强（最高5x）、亮度增强（最高3x）。常规快捷键操作：倍速/快进/音量/逐帧/亮度/画面缩放。此外，支持屏幕全屏/网页全屏/旋转90°/水平翻转/画面拖动/截图/画中画/纯净模式，支持自动记忆网站设置/全局自动设置/色彩模式更改/区间循环播放。
-// @version      1.1.0
+// @version      1.1.1
 // @license      MIT
 // @author       Qiu Zongman
 // @homepageURL  https://gitee.com/qiuzongman/video-controller
@@ -183,7 +183,7 @@
                 'max-width: 60%; min-width: 150px; padding: 0 14px;',
                 'height: 40px; color: #fff; line-height: 40px;',
                 'text-align: center; border-radius: 8px;',
-                'position: fixed; top: 50%; left: 50%;',
+                'position: absolute; top: 50%; left: 50%;',
                 'transform: translate(-50%, -50%);',
                 'z-index: 2147483647;',
                 'background: rgba(0,0,0,0.78);',
@@ -895,7 +895,7 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
   </div>
 </div></div>
 <div id="vc-page4" style="display:none">
-<div style="font-weight:bold;font-size:13px;color:#444;margin-bottom:6px">视频控制器 v1.1.0</div>
+<div style="font-weight:bold;font-size:13px;color:#444;margin-bottom:6px">视频控制器 v1.1.1</div>
 <div style="display:grid;grid-template-columns:52px 1fr;column-gap:6px;row-gap:2px">
 <span style="color:#555">作者</span><span><a href="https://space.bilibili.com/423767625" target="_blank" style="color:#1a73e8">邱宗满</a></span>
 <span style="color:#555">邮箱</span><span>qiuzongman@foxmail.com</span>
