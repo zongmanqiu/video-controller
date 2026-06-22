@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         视频控制器
 // @namespace    video-controller
-// @description  80KB的极简视频控制器，适配HTML5播放器。支持倍速（0.25x–16x）、音量增强（最高5x）、亮度增强（最高3x）。常规快捷键操作：倍速/快进/音量/逐帧/亮度/画面缩放。此外，支持屏幕全屏/网页全屏/旋转90°/水平翻转/画面拖动/截图/画中画/纯净模式，支持自动记忆网站设置/全局自动设置/色彩模式更改/区间循环播放。
-// @version      1.1.3
+// @description  120+KB的极简视频控制器，适配HTML5播放器。支持倍速（0.25x–16x）、音量增强（最高5x）、亮度增强（最高3x）。常规快捷键操作：倍速/快进/音量/逐帧/亮度/画面缩放。此外，支持屏幕全屏/网页全屏/旋转90°/水平翻转/画面拖动/截图/画中画/纯净模式，支持自动记忆网站设置/全局自动设置/色彩模式更改/区间循环播放。
+// @version      1.2.0
 // @license      MIT
 // @author       Qiu Zongman
 // @homepageURL  https://gitee.com/qiuzongman/video-controller
@@ -10,6 +10,7 @@
 // @downloadURL  https://gitee.com/qiuzongman/video-controller/raw/master/video-controller.js
 // @icon         data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTI5OSIgaGVpZ2h0PSIxMjk5IiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHhtbG5zOnhsaW5rPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5L3hsaW5rIiB4bWw6c3BhY2U9InByZXNlcnZlIiBvdmVyZmxvdz0iaGlkZGVuIj48ZyB0cmFuc2Zvcm09Im1hdHJpeCgxIDAgMCAxIDAgLTY1NCkiPjxyZWN0IHg9IjAiIHk9IjY1NCIgd2lkdGg9IjEyOTkiIGhlaWdodD0iMTI5OSIgZmlsbD0iIzAwNzBDMCIvPjxwYXRoIGQ9Ik00NjIgMTAwMiA5ODEgMTMwMy41IDQ2MiAxNjA1WiIgc3Ryb2tlPSIjRkZGRkZGIiBzdHJva2Utd2lkdGg9IjkxLjY2NjciIHN0cm9rZS1saW5lam9pbj0icm91bmQiIHN0cm9rZS1taXRlcmxpbWl0PSIxMCIgZmlsbD0iI0ZGRkZGRiIgZmlsbC1ydWxlPSJldmVub2RkIi8+PC9nPjwvc3ZnPg==
 // @match        *://*/*
+// @match        file:///*
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
@@ -74,6 +75,10 @@
         lastTab: 0,
         hideMenuEntry: false,
         openSettingsKey: '',
+        biliProgressEnabled: true,
+        favEnabled: false,
+        autoNextEnabled: true,
+        autoNextReverse: false,
     };
 
     const COLOR_PRESETS = {
@@ -192,7 +197,6 @@
             ].join('');
             document.body.appendChild(_toastEl);
         }
-        // toast 位置由 fullscreenchange 事件控制，此处不动
         _toastEl.textContent = msg;
         _toastEl.style.opacity = '1';
         _toastEl.style.display = '';
@@ -228,6 +232,7 @@
 
     function setVideoVolume(video, vol) {
         var clamped = Math.max(0, Math.min(settings.maxVolume, vol));
+        if (location.protocol === 'file:') clamped = Math.min(1, clamped);
         var record = audioCtxMap.get(video);
         var actual;
         if (record) {
@@ -306,6 +311,7 @@
     }
 
     var _sessionSpeed, _sessionVolume, _sessionBrightness;
+    var _autoNextHandler = null, _autoNextTimer = null, _webAutoNextDisabled = false;
 
     function hijackPlaybackRate() {
         if (window._vcHijackPR) return;
@@ -317,13 +323,8 @@
             Object.defineProperty(HTMLMediaElement.prototype, 'playbackRate', {
                 get: function() { return desc.get.call(this); },
                 set: function(v) {
-                    if (this._vcApplying) { origSet.call(this, v); return; }
                     origSet.call(this, v);
-                    if (_sessionSpeed !== undefined && Math.abs(v - _sessionSpeed) > 0.001) {
-                        this._vcApplying = true;
-                        origSet.call(this, _sessionSpeed);
-                        this._vcApplying = false;
-                    }
+                    _sessionSpeed = v;
                 },
                 configurable: true
             });
@@ -350,7 +351,9 @@
     function changeVolume(video, delta) {
         if (!video) return;
         var curVol = getVideoVolume(video);
-        var newVol = Math.round(curVol / settings.volumeStep) * settings.volumeStep + delta;
+        var rec = audioCtxMap.get(video);
+        var baseVol = rec ? curVol * video.volume : curVol;
+        var newVol = Math.round(baseVol / settings.volumeStep) * settings.volumeStep + delta;
         newVol = Math.max(0, Math.min(settings.maxVolume, newVol));
         var actual = setVideoVolume(video, newVol);
         _sessionVolume = actual;
@@ -421,9 +424,7 @@
     function toggleScreenFull(video) {
         var btn = document.querySelector('.bpx-player-ctrl-web,.dplayer-full-icon[data-name="web"],.vjs-remaining-time,.plyr__control[data-plyr="fullscreen"][data-size="small"],[aria-label="网页全屏"],[title="网页全屏"]');
         if (btn) { btn.click(); return; }
-        // fallback: 包裹式网页全屏
         if (video._vcSFParent) {
-            // 退出：拆包裹
             var wrap = video._vcSFParent;
             var inner = wrap.firstChild;
             if (inner) {
@@ -435,7 +436,6 @@
             video._vcSFOrigCss = null;
             Toast('退出网页全屏');
         } else {
-            // 进入：用包裹元素实现全屏，不改变容器本身的样式
             var el = video.parentElement;
             for (var i = 0; i < 5 && el; i++) {
                 if (el.querySelectorAll('video').length >= 1 && el.offsetWidth > 200) break;
@@ -547,7 +547,6 @@
         }
         var v = getActiveVideo();
         if (!v) { _cleanMode = false; return; }
-        // 隐藏视频的兄弟元素（覆盖层），但不隐藏包含视频的容器
         var p = v.parentElement;
         for (var d = 0; d < 4 && p && p !== document.body; d++) {
             var kids = p.children;
@@ -558,7 +557,7 @@
                 el.classList.add('vc-clean-lock');
                 _cleanEls.push(el);
             }
-            v = p; // 上一层的视频元素视为容器本身
+            v = p;
             p = p.parentElement;
         }
         Toast('纯净模式：开启');
@@ -629,6 +628,9 @@
         if (video._vcEventsBound) return;
         video._vcEventsBound = true;
         video.addEventListener('playing', onVideoPlay);
+        video.addEventListener('volumechange', function() {
+            _sessionVolume = getVideoVolume(video);
+        });
         if (settings.autoPlayEnabled) {
             video.play().catch(function(){});
         }
@@ -647,6 +649,201 @@
         var s = getSiteAuto(getCurrentSite()) || {};
         s[key] = (key === 'speed') ? Math.round(val * 100) / 100 : val;
         setSiteAuto(getCurrentSite(), s);
+    }
+
+    // ======================= B站多P/合集进度 =======================
+    var biliProgress = {
+        el: null, data: null, timer: null,
+        getData: function() {
+            try {
+                var root = window.app || document.querySelector('#app');
+                var data = root && root.__vue__ && root.__vue__.videoData;
+                if (!data) return null;
+                var result = {};
+                var bvid = (location.pathname.match(/\/video\/([^\/?#]+)/) || [0,''])[1];
+                var p = parseInt(new URLSearchParams(location.search).get('p')) || 1;
+                if (data.pages && data.pages.length > 1) {
+                    var multi = data.pages.map(function(pg){ return pg.duration; });
+                    var before = p > 1 ? multi.slice(0, p - 1).reduce(function(a,b){return a+b;}) : 0;
+                    result.multi = { before: before, total: data.duration };
+                }
+                if (data.ugc_season && data.ugc_season.sections) {
+                    var eps = data.ugc_season.sections[0].episodes;
+                    if (eps && eps.length > 1) {
+                        var total = 0, before = 0, found = false;
+                        for (var i = 0; i < eps.length; i++) {
+                            total += eps[i].page.duration;
+                            if (found) continue;
+                            if (eps[i].bvid === bvid) { found = true; }
+                            else { before += eps[i].page.duration; }
+                        }
+                        result.collection = { before: before, total: total };
+                    }
+                }
+                return (result.multi || result.collection) ? result : null;
+            } catch(e) { return null; }
+        },
+        setup: function() {
+            this.data = this.getData();
+            if (!this.data) return;
+            var tl = document.querySelector('.bpx-player-ctrl-time-label');
+            if (!tl) return;
+            if (document.getElementById('vc-bili-progress')) return;
+            var el = document.createElement('span');
+            el.id = 'vc-bili-progress';
+            el.style.cssText = 'color:#eee;padding-left:12px;font-size:13px;white-space:nowrap';
+            tl.style.display = 'inline-block';
+            tl.style.width = 'unset';
+            tl.insertAdjacentElement('beforeend', el);
+            tl.parentElement.style.minWidth = 'max-content';
+            this.el = el;
+            this.update();
+            try {
+                var p = window.player || window.fPlayer || (document.querySelector('video') && document.querySelector('video').player);
+                if (p && p.on) p.on("Player_TimeUpdate", this.update.bind(this));
+                else this.updateInterval = setInterval(this.update.bind(this), 1000);
+            } catch(e) { this.updateInterval = setInterval(this.update.bind(this), 1000); }
+            var mp = document.getElementById('multi_page');
+            if (mp) mp.addEventListener('click', function() { setTimeout(function(){ biliProgress.data = biliProgress.getData(); biliProgress.update(); }, 500); });
+        },
+        update: function() {
+            if (!this.el || !this.data) return;
+            var now = 0;
+            try {
+                var p = window.player || window.fPlayer;
+                if (p && p.getCurrentTime) now = parseInt(p.getCurrentTime());
+                else {
+                    var v = document.querySelector('video');
+                    if (v) now = parseInt(v.currentTime);
+                }
+            } catch(e) {}
+            var parts = [];
+            if (this.data.multi) {
+                var pct = (((now + this.data.multi.before) / this.data.multi.total) * 100).toFixed(1);
+                parts.push('多P: ' + pct + '%');
+            }
+            if (this.data.collection) {
+                var pct = (((now + this.data.collection.before) / this.data.collection.total) * 100).toFixed(1);
+                parts.push('合集: ' + pct + '%');
+            }
+            this.el.textContent = parts.join('    ');
+        }
+    };
+
+    function biliProgressInit() {
+        if (location.hostname !== 'www.bilibili.com') return;
+        if (!settings.biliProgressEnabled) return;
+        if (biliProgress.timer) return;
+        biliProgress.timer = setInterval(function() {
+            var tl = document.querySelector('.bpx-player-ctrl-time-label');
+            var root = window.app || document.querySelector('#app');
+            var ready = tl && root && root.__vue__ && root.__vue__.videoData;
+            if (ready) {
+                clearInterval(biliProgress.timer);
+                biliProgress.timer = null;
+                biliProgress.setup();
+            }
+        }, 1000);
+    }
+
+    // ======================= B站自动切集 =======================
+    function injectNextUI() {
+        if (location.hostname !== 'www.bilibili.com') return;
+        var old = document.querySelector('#vc-next-ui');
+        if (old && old.tagName === 'SPAN' && old.textContent.indexOf('切集') >= 0) { old.remove(); }
+        if (!settings.autoNextEnabled) {
+            var el = document.getElementById('vc-next-ui');
+            if (el) el.remove();
+            return;
+        }
+        if (document.querySelector('#vc-next-ui')) return;
+        _webAutoNextDisabled = false;
+        var container = document.querySelector('.base-video-sections-v1,.video-pod.video-pod');
+        if (!container) return;
+        var div = document.createElement('div');
+        div.id = 'vc-next-ui';
+        div.style.cssText = 'display:flex;align-items:center;gap:10px;padding:0;margin:0;line-height:1;font-size:13px;color:var(--text3,#99a2aa)';
+        div.innerHTML = '<span class="vc-nl">自动切集</span><span class="vc-ns" data-key="enabled"></span><span class="vc-nl" style="margin-left:6px">倒序</span><span class="vc-ns" data-key="reverse"></span>';
+        var ref = container.querySelector('.header-top,.video-sections-head');
+        if (ref) { ref.parentNode.insertBefore(div, ref); }
+        else { container.insertBefore(div, container.firstChild); }
+
+        div.querySelectorAll('.vc-ns').forEach(function(el) {
+            var key = el.getAttribute('data-key');
+            var toggle = document.createElement('span');
+            toggle.className = 'vc-next-switch';
+            toggle.style.cssText = 'display:inline-block;position:relative;width:30px;height:20px;border:1px solid #ccc;outline:none;border-radius:10px;box-sizing:border-box;background:#ccc;cursor:pointer;vertical-align:middle;transition:border-color .2s,background-color .2s';
+            var dot = document.createElement('span');
+            dot.style.cssText = 'position:absolute;top:1px;left:1px;border-radius:100%;width:16px;height:16px;background-color:#fff;transition:all .2s';
+            toggle.appendChild(dot);
+            el.parentNode.replaceChild(toggle, el);
+
+            function sync() {
+                var on = key === 'enabled' ? (settings.autoNextEnabled && !_webAutoNextDisabled) : settings.autoNextReverse;
+                toggle.style.borderColor = on ? '#00aeec' : '#ccc';
+                toggle.style.background = on ? '#00aeec' : '#ccc';
+                dot.style.left = on ? '11px' : '1px';
+            }
+            sync();
+
+            toggle.addEventListener('click', function() {
+                if (key === 'enabled') {
+                    _webAutoNextDisabled = !_webAutoNextDisabled;
+                    setupAutoNext(_webAutoNextDisabled ? 'off' : getNextMode());
+                } else {
+                    settings.autoNextReverse = !settings.autoNextReverse;
+                    saveSettings();
+                    setupAutoNext(getNextMode());
+                }
+                sync();
+            });
+        });
+    }
+
+    function _onVideoEndedAuto(mode) {
+        var cards = document.querySelectorAll('.video-episode-card,.video-pod__item');
+        if (!cards.length) return;
+        for (var i = 0; i < cards.length; i++) {
+            var gif = cards[i].querySelector('.playing-gif');
+            if (gif && gif.style.display !== 'none') {
+                var target;
+                if (mode === 'reverse') {
+                    target = i > 0 ? cards[i - 1] : cards[cards.length - 1];
+                } else {
+                    target = i < cards.length - 1 ? cards[i + 1] : cards[0];
+                }
+                var btn = target.querySelector('.simple-base-item') || target.querySelector('a') || target;
+                if (btn) { btn.click(); }
+                return;
+            }
+        }
+    }
+
+    function getNextMode() {
+        return settings.autoNextEnabled ? (settings.autoNextReverse ? 'reverse' : 'on') : 'off';
+    }
+
+    function setupAutoNext(mode) {
+        if (location.hostname !== 'www.bilibili.com') return;
+        try { localStorage.setItem('bpx_player_continue_play', mode !== 'off' ? '1' : '0'); } catch(e) {}
+        if (_autoNextTimer) { clearInterval(_autoNextTimer); _autoNextTimer = null; }
+        var v = document.querySelector('video');
+        if (v && _autoNextHandler) {
+            v.removeEventListener('ended', _autoNextHandler);
+            _autoNextHandler = null;
+        }
+        if (mode !== 'off') {
+            if (!v) { setTimeout(function() { setupAutoNext(mode); }, 1000); return; }
+            _autoNextHandler = function() { _onVideoEndedAuto(mode); };
+            v.addEventListener('ended', _autoNextHandler);
+            _autoNextTimer = setInterval(function() {
+                var vv = document.querySelector('video');
+                if (vv && _autoNextHandler) {
+                    vv.removeEventListener('ended', _autoNextHandler);
+                    vv.addEventListener('ended', _autoNextHandler);
+                }
+            }, 10000);
+        }
     }
 
     function bindAllVideos() {
@@ -746,7 +943,6 @@
         ].join('');
         panel.innerHTML = buildSettingsHTML();
         var host = document.fullscreenElement || document.body;
-        // 视频元素全屏时不显示子节点，改用其父容器
         if (host && host.tagName === 'VIDEO') host = host.parentElement;
         host.appendChild(panel);
         bindSettingsEvents(panel);
@@ -768,10 +964,6 @@
 .vc-item { display: grid; grid-template-columns: 52px 60px 1fr; gap: 4px; align-items: center; margin-bottom: 5px; height: 28px; }
 .vc-lbl { color: #555; white-space: nowrap; }
 .vc-num input { box-sizing: border-box; width: 100%; padding: 4px; border: 1px solid #bbb; border-radius: 4px; text-align: center; background: #f9f9f9; -moz-appearance: textfield; }
-.vc-num input::-webkit-outer-spin-button,
-.vc-num input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
-#vc-lc::-webkit-outer-spin-button,
-#vc-lc::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 input[type="number"] { -moz-appearance: textfield; }
 input[type="number"]::-webkit-outer-spin-button,
 input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
@@ -782,14 +974,14 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
 .vc-ctl select { background: #fff3cd; text-align: center; -webkit-appearance: none; -moz-appearance: none; appearance: none; }
 .vc-ctl input:focus { outline: none; border-color: #4CAF50; box-shadow: 0 0 0 2px rgba(76,175,80,0.25); background: #fff; }
 .vc-num input:focus, #vc-ls:focus, #vc-le:focus, #vc-lc:focus { outline: none; border-color: #4CAF50; box-shadow: 0 0 0 2px rgba(76,175,80,0.25); background: #fff; }
-#vc-memorySites, #vc-noMemorySites { border: 1px solid #bbb; }
+#vc-noMemorySites { border: 1px solid #bbb; }
 #vc-noMemorySites { margin-bottom: -5px; }
 #vc-noMemorySites:focus { outline: none; border-color: #4CAF50; box-shadow: 0 0 0 2px rgba(76,175,80,0.25); }
 .vc-ctl input::placeholder { color: #bbb; }
 .vc-item input, .vc-item select, .vc-item button, .vc-dual button { height: 25px; box-sizing: border-box; }
 .vc-hint { color: #999; }
 #vc-page4 a { text-decoration: none; color: #1a73e8 !important; }
-.vc-btn { padding: 8px 20px; border: none; border-radius: 4px; cursor: pointer; color: #fff; }
+.vc-btn { padding: 6px 14px; border: none; border-radius: 4px; cursor: pointer; color: #fff; }
 .vc-btn:hover { filter: brightness(0.9); }
 .vc-btn-save { background: #4CAF50; }
 .vc-btn-cancel { background: #f44336; }
@@ -836,11 +1028,15 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
       <div class="vc-item"><span class="vc-lbl">截图</span><span class="vc-num"></span><span class="vc-ctl"><input type="text" id="vc-screenshot" class="vc-key-input" value="${esc(displayKey(s.screenshot))}" readonly placeholder="点击后按键"></span></div>
       <div class="vc-item"><span class="vc-lbl">画中画</span><span class="vc-num"></span><span class="vc-ctl"><input type="text" id="vc-pipKey" class="vc-key-input" value="${esc(displayKey(s.pipKey))}" readonly placeholder="点击后按键"></span></div>
       <div class="vc-item"><span class="vc-lbl">纯净模式</span><span class="vc-num"></span><span class="vc-ctl"><input type="text" id="vc-cleanKey" class="vc-key-input" value="${esc(displayKey(s.cleanKey))}" readonly placeholder="点击后按键"></span></div>
-      <div class="vc-item"><span class="vc-lbl" style="font-weight:bold">设置入口</span><span class="vc-num"></span><span class="vc-ctl"><span class="vc-dual" id="vc-hideMenuEntry" data-value="${s.hideMenuEntry ? '1' : '0'}" style="display:flex;gap:0;width:100%;max-width:180px"><button type="button" style="padding:0;line-height:25px;border:1px solid ${s.hideMenuEntry ? '#90caf9' : '#64b5f6'};border-radius:4px 0 0 4px;background:${s.hideMenuEntry ? '#e3f2fd' : '#90caf9'};color:${s.hideMenuEntry ? '#1565c0' : '#0d47a1'};cursor:pointer;font-size:13px;flex:1">显示</button><button type="button" style="padding:0;line-height:25px;border:1px solid ${s.hideMenuEntry ? '#64b5f6' : '#90caf9'};border-left:none;border-radius:0 4px 4px 0;background:${s.hideMenuEntry ? '#90caf9' : '#e3f2fd'};color:${s.hideMenuEntry ? '#0d47a1' : '#1565c0'};cursor:pointer;font-size:13px;flex:1">隐藏</button></span></span></div>
+      <div class="vc-item"><span class="vc-lbl">&nbsp;</span><span class="vc-num"></span><span class="vc-ctl"></span></div>
       <div class="vc-item"><span class="vc-lbl">进入设置</span><span class="vc-num"></span><span class="vc-ctl"><input type="text" id="vc-openSettingsKey" class="vc-key-input" value="${esc(displayKey(s.openSettingsKey))}" readonly placeholder="点击后按键"></span></div>
       <div class="vc-item" style="margin-bottom:0"><span class="vc-lbl">提示时长</span><span class="vc-num" style="font-size:11px;color:#999">(0=关闭)</span><span class="vc-ctl"><input type="number" id="vc-toastDuration" value="${s.toastDuration}" min="0" max="30000" step="500"></span></div>
     </div>
     <div class="vc-part">
+      <div style="display:grid;grid-template-columns:52px 60px 1fr;gap:4px;align-items:center;margin-bottom:5px;height:28px">
+        <span style="font-weight:bold;font-size:13px;color:#444">视频收藏</span><span></span>
+        <span style="display:flex;justify-content:flex-end"><span class="vc-dual" id="vc-favEnabled" data-value="${s.favEnabled ? '1' : '0'}" style="display:flex;gap:0;width:100%"><button type="button" style="padding:0;line-height:25px;border:1px solid ${s.favEnabled ? '#64b5f6' : '#90caf9'};border-radius:4px 0 0 4px;background:${s.favEnabled ? '#90caf9' : '#e3f2fd'};color:${s.favEnabled ? '#0d47a1' : '#1565c0'};cursor:pointer;font-size:13px;flex:1">开启</button><button type="button" style="padding:0;line-height:25px;border:1px solid ${s.favEnabled ? '#90caf9' : '#64b5f6'};border-left:none;border-radius:0 4px 4px 0;background:${s.favEnabled ? '#e3f2fd' : '#90caf9'};color:${s.favEnabled ? '#1565c0' : '#0d47a1'};cursor:pointer;font-size:13px;flex:1">关闭</button></span></span>
+      </div>
       <div style="display:grid;grid-template-columns:52px 60px 1fr;gap:4px;align-items:center;margin-bottom:5px;height:28px;font-size:13px">
         <span style="font-weight:bold;color:#444">色彩模式</span><span></span>
         <select id="vc-preset" style="height:25px;box-sizing:border-box;padding:4px 8px;border:1px solid #64b5f6;border-radius:4px;font-size:13px;background:#90caf9;color:#0d47a1;cursor:pointer;text-align:center;max-width:180px;-webkit-appearance:none;-moz-appearance:none;appearance:none">${(()=>{var p=COLOR_PRESETS; return Object.keys(p).map(function(k){return '<option value="'+k+'" style="background:#e3f2fd;color:#1565c0">'+k+'</option>';}).join('')+'<option value="自定义" style="background:#e3f2fd;color:#999">自定义</option>';})()}</select>
@@ -877,7 +1073,6 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
           <span style="display:inline-block;width:24px;line-height:24px;text-align:center;border:1px solid #bbb;border-radius:4px;background:#f5f5f5;cursor:pointer;font-size:14px;flex-shrink:0" id="vc-ch-p">+</span>
         </span>
       </div>
-      <div class="vc-item"><span class="vc-lbl">&nbsp;</span><span class="vc-num"></span><span class="vc-ctl"></span></div> 
       <div style="display:grid;grid-template-columns:52px 60px 1fr;gap:4px;align-items:center;margin-bottom:5px;height:28px">
         <span style="font-weight:bold;font-size:13px;color:#444">区间循环</span><span></span>
         <span style="display:flex;justify-content:flex-end"><span class="vc-dual" id="vc-loop-toggle" data-value="0" style="display:flex;gap:0;width:100%"><button type="button" style="padding:0;line-height:25px;border:1px solid #64b5f6;border-radius:4px 0 0 4px;background:#90caf9;color:#0d47a1;cursor:pointer;font-size:13px;flex:1">开启</button><button type="button" style="padding:0;line-height:25px;border:1px solid #90caf9;border-left:none;border-radius:0 4px 4px 0;background:#e3f2fd;color:#1565c0;cursor:pointer;font-size:13px;flex:1">关闭</button></span></span>
@@ -907,14 +1102,12 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
   </div>
   <div class="vc-part">
     <div class="vc-item"><span class="vc-lbl" style="font-weight:bold">站点记忆</span><span class="vc-num"></span><span class="vc-ctl"><span class="vc-dual" id="vc-siteMemoryEnabled" data-value="${s.siteMemoryEnabled ? '1' : '0'}" style="display:flex;gap:0;width:100%;max-width:180px"><button type="button" style="padding:0;line-height:25px;border:1px solid ${s.siteMemoryEnabled ? '#64b5f6' : '#90caf9'};border-radius:4px 0 0 4px;background:${s.siteMemoryEnabled ? '#90caf9' : '#e3f2fd'};color:${s.siteMemoryEnabled ? '#0d47a1' : '#1565c0'};cursor:pointer;font-size:13px;flex:1">开启</button><button type="button" style="padding:0;line-height:25px;border:1px solid ${s.siteMemoryEnabled ? '#90caf9' : '#64b5f6'};border-left:none;border-radius:0 4px 4px 0;background:${s.siteMemoryEnabled ? '#e3f2fd' : '#90caf9'};color:${s.siteMemoryEnabled ? '#1565c0' : '#0d47a1'};cursor:pointer;font-size:13px;flex:1">关闭</button></span></span></div>
-    <div style="height:28px;line-height:28px;font-size:13px;color:#444;margin-bottom:6px">已记忆站点</div>
-    <textarea id="vc-memorySites" readonly style="box-sizing:border-box;width:100%;height:125px;padding:4px 6px;border-radius:4px;font-size:11px;color:#555;background:#f5f5f5;resize:none" placeholder="自动记录"></textarea>
     <div style="display:grid;grid-template-columns:52px 60px 1fr;gap:4px;align-items:center;height:28px;margin-top:1px;margin-bottom:6px"><span style="font-size:13px;color:#444">禁止站点</span><span></span><button type="button" id="vc-addNomemory" style="padding:0 8px;line-height:22px;border:1px solid #ff9800;border-radius:4px;background:#ffd54f;color:#3e2723;cursor:pointer;font-size:12px;white-space:nowrap;width:100%;box-sizing:border-box">禁止当前网站</button></div>
     <textarea id="vc-noMemorySites" style="box-sizing:border-box;width:100%;height:125px;padding:4px 6px;border-radius:4px;font-size:11px;color:#333;resize:none" placeholder="每行一个域名，如&#10;www.example.com&#10;v.example.com"></textarea>
   </div>
 </div></div>
 <div id="vc-page4" style="display:none">
-<div style="font-weight:bold;font-size:13px;color:#444;margin-bottom:6px">视频控制器 v1.1.3</div>
+<div style="font-weight:bold;font-size:13px;color:#444;margin-bottom:5px;height:28px;line-height:28px">视频控制器 v1.2.0</div>
 <div style="display:grid;grid-template-columns:52px 1fr;column-gap:6px;row-gap:2px">
 <span style="color:#555">作者</span><span><a href="https://space.bilibili.com/423767625" target="_blank" style="color:#1a73e8">邱宗满</a></span>
 <span style="color:#555">邮箱</span><span>qiuzongman@foxmail.com</span>
@@ -922,24 +1115,37 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
 <span style="color:#555">项目地址</span><span><a href="https://gitee.com/qiuzongman/video-controller" target="_blank" style="color:#1a73e8">Gitee</a></span>
 <span style="color:#555">开发工具</span><span><a href="https://reasonix.io/" target="_blank" style="color:#1a73e8">Reasonix</a> + <a href="https://www.deepseek.com/" target="_blank" style="color:#1a73e8">Deepseek</a></span>
 </div>
-<div style="font-weight:bold;font-size:13px;color:#444;margin:28px 0 6px">说明</div>
-<div class="vc-hint" style="margin-bottom:3px">*适用于HTML5播放器，腾讯视频等网站的WASM播放器不适配</div>
-<div class="vc-hint" style="margin-bottom:3px">*基于Bilibili播放器进行测试，其它网站问题请邮件告知</div>
-<div class="vc-hint" style="margin-bottom:3px">*倍速范围 0.25x - 16x</div>
-<div class="vc-hint" style="margin-bottom:3px">*音量范围 0x - 5x（>100% 需 AudioContext 增益）</div>
-<div class="vc-hint" style="margin-bottom:3px">*亮度范围 0x - 3x</div>
-<div class="vc-hint" style="margin-bottom:0">*先执行全局自动，再执行站点记忆进行覆盖，记忆包括倍速、音量和亮度</div>
-</div></div>
-
+<div style="font-weight:bold;font-size:13px;color:#444;margin:14px 0 6px">推荐脚本</div>
+<div><a href="https://scriptcat.org/zh-CN/script-show-page/6725" target="_blank" style="color:#1565c0;text-decoration:none">Web+</a></div>
+<div><a href="https://greasyfork.org/zh-CN/scripts/419215-autopager" target="_blank" style="color:#1565c0;text-decoration:none">自动无缝翻页</a></div>
+<div><a href="https://greasyfork.org/zh-CN/scripts/24204-picviewer-ce" target="_blank" style="color:#1565c0;text-decoration:none">Picviewer CE+</a></div>
+<div><a href="https://scriptcat.org/zh-CN/script-show-page/1604" target="_blank" style="color:#1565c0;text-decoration:none">LinkSwift</a></div>
+<div><a href="https://greasyfork.org/zh-CN/scripts/473912-github%E6%90%9C%E7%B4%A2%E5%87%80%E5%8C%96" target="_blank" style="color:#1565c0;text-decoration:none">GitHub搜索净化</a></div>
+<div><a href="https://greasyfork.org/zh-CN/scripts/412245-github-enhancement-high-speed-download" target="_blank" style="color:#1565c0;text-decoration:none">GitHub高速下载</a></div>
+<div style="font-weight:bold;font-size:13px;color:#444;margin:14px 0 6px">🫶 支援我买 Token 继续改进代码</div>
+<div style="margin-bottom:4px;font-size:13px;font-weight:bold;color:#555">微信</div>
+<img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0NTAiIGhlaWdodD0iNDUwIiBzaGFwZS1yZW5kZXJpbmc9ImNyaXNwRWRnZXMiIHZpZXdCb3g9IjAgMCA0NTAgNDUwIj4KICA8cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjZmZmIi8+CiAgPHBhdGggZD0iTTAgMGg3MHYxMEgwem04MCAwaDEwdjEwSDgwem0zMCAwaDQwdjEwaC00MHptNTAgMGgyMHYxMGgtMjB6bTQwIDBoMTB2MjBoLTEwem0zMCAwaDIwdjIwaC0yMHptMzAgMGgyMHYxMGgtMjB6bTQwIDBoNDB2MTBoLTQwem02MCAwaDEwdjEwaC0xMHptMjAgMGg3MHYxMGgtNzB6TTAgMTBoMTB2NjBIMHptNjAgMGgxMHY2MEg2MHptNDAgMGg0MHYxMGgtNDB6bTUwIDBoMTB2MTBoLTEwem0yMCAwaDEwdjEwaC0xMHptNDAgMGgyMHYxMGgtMjB6bTUwIDBoMTB2NDBoLTEwem05MCAwaDEwdjQwaC0xMHptMzAgMGgxMHY2MGgtMTB6bTYwIDBoMTB2NjBoLTEwek0yMCAyMGgzMHYzMEgyMHptODAgMGgxMHYxMGgtMTB6bTMwIDBoMTB2MjBoLTEwem01MCAwaDEwdjIwaC0xMHptMzAgMGgxMHYxMGgtMTB6bTMwIDBoMjB2MTBoLTIwem01MCAwaDIwdjEwaC0yMHptMTEwIDBoMzB2MzBoLTMwek05MCAzMGgxMHYzMEg5MHptMzAgMGgxMHYyMGgtMTB6bTMwIDBoMTB2MzBoLTEwem0yMCAwaDEwdjIwaC0xMHptNjAgMGgxMHYyMGgtMTB6bTQwIDBoMjB2MTBoLTIwem00MCAwaDMwdjEwaC0zMHptNTAgMGgxMHYyMGgtMTB6TTgwIDQwaDEwdjMwSDgwem02MCAwaDEwdjMwaC0xMHptMjAgMGgxMHYxMGgtMTB6bTQwIDBoMzB2MTBoLTMwem00MCAwaDIwdjEwaC0yMHptNDAgMGgxMHYxMGgtMTB6bTQwIDBoMzB2MTBoLTMwek0xODAgNTBoMzB2MTBoLTMwem02MCAwaDEwdjgwaC0xMHptMzAgMGgxMHYxMGgtMTB6bTMwIDBoNDB2MTBoLTQwek0xMCA2MGg1MHYxMEgxMHptOTAgMGgxMHYyMGgtMTB6bTIwIDBoMTB2NTBoLTEwem00MCAwaDEwdjMwaC0xMHptMjAgMGgxMHYxMGgtMTB6bTIwIDBoMTB2MzBoLTEwem0yMCAwaDEwdjEwaC0xMHptNDAgMGgxMHYxMGgtMTB6bTIwIDBoMTB2MjBoLTEwem0yMCAwaDEwdjMwaC0xMHptMjAgMGgxMHYzMGgtMTB6bTIwIDBoMTB2MTBoLTEwem0yMCAwaDEwdjYwaC0xMHptMzAgMGg1MHYxMGgtNTB6TTkwIDcwaDEwdjEwSDkwem00MCAwaDEwdjEwaC0xMHptNjAgMGgxMHY3MGgtMTB6bTYwIDBoMTB2NjBoLTEwem00MCAwaDEwdjEwaC0xMHptNjAgMGgxMHYyMGgtMTB6TTEwIDgwaDcwdjEwSDEwem0xMzAgMGgyMHYxMGgtMjB6bTMwIDBoMjB2MTBoLTIwem00MCAwaDMwdjEwaC0zMHptNTAgMGgyMHYxMGgtMjB6bTEzMCAwaDIwdjEwaC0yMHptNTAgMGgxMHYyMGgtMTB6TTEwIDkwaDIwdjIwSDEwem00MCAwaDEwdjIwSDUwem0yMCAwaDEwdjEwSDcwem00MCAwaDEwdjcwaC0xMHptNDAgMGgxMHYyMGgtMTB6bTYwIDBoMjB2MTBoLTIwem03MCAwaDEwdjEwaC0xMHptMzAgMGgxMHYyMGgtMTB6bTIwIDBoMTB2MzBoLTEwem01MCAwaDEwdjEwaC0xMHptMjAgMGg0MHYxMGgtNDB6TTAgMTAwaDEwdjEwSDB6bTMwIDBoMTB2NzBIMzB6bTMwIDBoMTB2MTBINjB6bTIwIDBoMjB2MjBIODB6bTUwIDBoMjB2MTBoLTIwem0zMCAwaDIwdjEwaC0yMHptNDAgMGgxMHYyMGgtMTB6bTIwIDBoMTB2NDBoLTEwem00MCAwaDIwdjEwaC0yMHptMzAgMGgyMHYyMGgtMjB6bTUwIDBoMjB2MTBoLTIwem03MCAwaDEwdjEwaC0xMHptMjAgMGgxMHYxMGgtMTB6TTEwIDExMGgxMHYxMEgxMHptMzAgMGgxMHYzMEg0MHptNjAgMGgxMHYyMGgtMTB6bTMwIDBoMTB2MTBoLTEwem00MCAwaDEwdjE5MGgtMTB6bTYwIDBoMTB2MzBoLTEwem05MCAwaDEwdjEwaC0xMHptMzAgMGgxMHYxMGgtMTB6bTIwIDBoMTB2MTBoLTEwem0yMCAwaDIwdjEwaC0yMHptMzAgMGgxMHYzMGgtMTB6bTIwIDBoMTB2MTBoLTEwek0wIDEyMGgxMHYzMEgwem0yMCAwaDEwdjIwSDIwem00MCAwaDIwdjEwSDYwem05MCAwaDEwdjE4MGgtMTB6bTYwIDBoMTB2MjBoLTEwem04MCAwaDEwdjEwaC0xMHptOTAgMGgxMHYyMGgtMTB6bTMwIDBoMTB2MjBoLTEwem0yMCAwaDEwdjEwaC0xMHpNNzAgMTMwaDEwdjEwSDcwem0yMCAwaDEwdjEwSDkwem03MCAwaDEwdjEwaC0xMHptMjAgMGgxMHYxOTBoLTEwem0yMCAwaDEwdjEwaC0xMHptNjAgMGgzMHYxMGgtMzB6bTQwIDBoMTB2NDBoLTEwem0yMCAwaDIwdjEwaC0yMHptMzAgMGgyMHYxMGgtMjB6bTUwIDBoMTB2MTBoLTEwek0xMCAxNDBoMTB2MTBIMTB6bTUwIDBoMTB2MTBINjB6bTIwIDBoMTB2MTBIODB6bTIwIDBoMTB2MjBoLTEwem0yMCAwaDEwdjIwaC0xMHptMTQwIDBoMTB2MTcwaC0xMHptMzAgMGgxMHYxOTBoLTEwem0yMCAwaDEwdjEwaC0xMHptNDAgMGgxMHYyMGgtMTB6bTkwIDBoMTB2MTBoLTEwek0yMCAxNTBoMTB2MjBIMjB6bTIwIDBoMjB2MTBINDB6bTEyMCAwaDEwdjE1MGgtMTB6bTMwIDBoNzB2MTUwaC03MHptODAgMGgyMHYxNTBoLTIwem02MCAwaDEwdjIwaC0xMHptMzAgMGgyMHYxMGgtMjB6bTMwIDBoMjB2MTBoLTIwem0zMCAwaDEwdjEwaC0xMHpNMCAxNjBoMjB2MTBIMHptNTAgMGgyMHYxMEg1MHptOTAgMGgxMHYxMGgtMTB6bTE4MCAwaDEwdjEwaC0xMHptMjAgMGgxMHYzMGgtMTB6bTMwIDBoMTB2MzBoLTEwem0yMCAwaDEwdjIwaC0xMHptNDAgMGgxMHYxMGgtMTB6TTAgMTcwaDEwdjEwSDB6bTgwIDBoMTB2ODBIODB6bTMzMCAwaDIwdjEwaC0yMHpNMTAgMTgwaDIwdjIwSDEwem00MCAwaDIwdjEwSDUwem00MCAwaDEwdjEwSDkwem01MCAwaDEwdjEwaC0xMHptMTcwIDBoMTB2MzBoLTEwem00MCAwaDEwdjEwaC0xMHptMzAgMGgxMHYxMGgtMTB6bTUwIDBoMTB2MTBoLTEwek0zMCAxOTBoMTB2MTBIMzB6bTIwIDBoMTB2MjBINTB6bTYwIDBoMTB2MjBoLTEwem0yMCAwaDEwdjEwaC0xMHptMTcwIDBoMTB2NTBoLTEwem02MCAwaDEwdjYwaC0xMHptMzAgMGgyMHYyMGgtMjB6bTUwIDBoMTB2MjBoLTEwek0wIDIwMGgyMHYyMEgwem00MCAwaDEwdjUwSDQwem0yMCAwaDIwdjEwSDYwem02MCAwaDEwdjMwaC0xMHptMjAwIDBoMzB2MTBoLTMwem01MCAwaDIwdjEwaC0yMHpNMjAgMjEwaDEwdjIwSDIwem0xMTAgMGgxMHYxMGgtMTB6bTE5MCAwaDIwdjEwaC0yMHptODAgMGg0MHYxMGgtNDB6TTYwIDIyMGgxMHYxMEg2MHptMzAgMGgxMHY0MEg5MHptMjQwIDBoMzB2MTBoLTMwem01MCAwaDEwdjEwaC0xMHptMjAgMGgxMHYzMGgtMTB6bTIwIDBoMTB2MTBoLTEwek0wIDIzMGgxMHYzMEgwem0xMTAgMGgxMHYxMGgtMTB6bTMwIDBoMTB2MTBoLTEwem0xODAgMGgxMHYxMGgtMTB6bTMwIDBoMTB2MTBoLTEwem05MCAwaDEwdjEwaC0xMHpNMTAgMjQwaDIwdjEwSDEwem00MCAwaDMwdjEwSDUwem01MCAwaDEwdjIwaC0xMHptMjAgMGgxMHYyMGgtMTB6bTE5MCAwaDEwdjEwaC0xMHptMjAgMGgyMHYxMGgtMjB6bTQwIDBoMzB2MTBoLTMwem02MCAwaDEwdjQwaC0xMHpNMjAgMjUwaDEwdjEwSDIwem0zMCAwaDEwdjMwSDUwem02MCAwaDEwdjEwaC0xMHptMzAgMGgxMHYyMGgtMTB6bTE2MCAwaDEwdjEwaC0xMHptMjAgMGgxMHYxMGgtMTB6bTMwIDBoMTB2NDBoLTEwem0yMCAwaDIwdjEwaC0yMHptNDAgMGgyMHYzMGgtMjB6bTMwIDBoMTB2MTBoLTEwek00MCAyNjBoMTB2MzBINDB6bTIwIDBoMTB2MTBINjB6bTIwIDBoMTB2MTBIODB6bTUwIDBoMTB2NDBoLTEwem0xODAgMGgxMHYyMGgtMTB6bTMwIDBoMTB2MTBoLTEwem00MCAwaDEwdjEwaC0xMHpNMTAgMjcwaDMwdjEwSDEwem02MCAwaDEwdjEwSDcwem0yMCAwaDEwdjIwSDkwem0yMCAwaDIwdjEwaC0yMHptMjUwIDBoMjB2MjBoLTIwem04MCAwaDEwdjEwaC0xMHpNMTAgMjgwaDIwdjEwSDEwem01MCAwaDEwdjEwSDYwem00MCAwaDEwdjMwaC0xMHptMjAgMGgxMHYxMGgtMTB6bTIxMCAwaDEwdjEwaC0xMHptNjAgMGgxMHYzMGgtMTB6bTIwIDBoMTB2MjBoLTEwek0yMCAyOTBoMTB2MTBIMjB6bTUwIDBoMjB2MTBINzB6bTcwIDBoMTB2MzBoLTEwem0xNzAgMGgxMHYxMGgtMTB6bTMwIDBoMTB2MjBoLTEwem0zMCAwaDEwdjEwaC0xMHptMzAgMGgxMHYxMGgtMTB6bTIwIDBoMTB2MTBoLTEwek0xMCAzMDBoMTB2MTBIMTB6bTMwIDBoMzB2MTBINDB6bTQwIDBoMTB2MjBIODB6bTMwIDBoMjB2MTBoLTIwem0xMjAgMGgzMHYxMGgtMzB6bTQwIDBoMTB2NDBoLTEwem0zMCAwaDEwdjIwaC0xMHptMzAgMGgxMHYxMGgtMTB6bTEwMCAwaDEwdjEwaC0xMHpNMCAzMTBoMTB2MzBIMHptMjAgMGgxMHYxMEgyMHptMjAgMGgyMHYxMEg0MHptNTAgMGgxMHYxMEg5MHptMzAgMGgyMHYxMGgtMjB6bTQwIDBoMjB2MjBoLTIwem0zMCAwaDIwdjEwaC0yMHptOTAgMGgxMHYxMGgtMTB6bTMwIDBoMjB2MTBoLTIwem00MCAwaDEwdjEwaC0xMHptMjAgMGgyMHYxMGgtMjB6bTQwIDBoMjB2MTBoLTIwek0xMCAzMjBoMTB2MjBIMTB6bTIwIDBoMTB2MTBIMzB6bTMwIDBoMjB2MTBINjB6bTE0MCAwaDIwdjMwaC0yMHptNjAgMGgxMHYzMGgtMTB6bTgwIDBoMTB2MTBoLTEwem0yMCAwaDEwdjEwaC0xMHptNjAgMGgyMHYxMGgtMjB6TTQwIDMzMGgyMHYxMEg0MHptNDAgMGg0MHYxMEg4MHptNjAgMGgxMHY3MGgtMTB6bTMwIDBoMTB2MTBoLTEwem01MCAwaDIwdjEwaC0yMHptNjAgMGgxMHYxMGgtMTB6bTIwIDBoMTB2MTBoLTEwem0yMCAwaDIwdjEwaC0yMHptMzAgMGgxMHYxMGgtMTB6bTQwIDBoNDB2MTBoLTQwem01MCAwaDEwdjEwaC0xMHpNNDAgMzQwaDEwdjMwSDQwem0yMCAwaDEwdjEwSDYwem0zMCAwaDMwdjEwSDkwem0xNDAgMGgzMHYxMGgtMzB6bTgwIDBoMTB2MjBoLTEwem0zMCAwaDEwdjQwaC0xMHptNzAgMGgzMHYxMGgtMzB6TTEwIDM1MGgzMHYxMEgxMHptODAgMGgxMHYxMEg5MHptMjAgMGgzMHYxMGgtMzB6bTUwIDBoMzB2MTBoLTMwem00MCAwaDEwdjEwMGgtMTB6bTIwIDBoMzB2MjBoLTMwem01MCAwaDQwdjEwaC00MHptNTAgMGgxMHYzMGgtMTB6bTQwIDBoMTB2NjBoLTEwem01MCAwaDIwdjEwaC0yMHptMzAgMGgxMHYxMGgtMTB6TTAgMzYwaDEwdjEwSDB6bTMwIDBoMTB2MTBIMzB6bTMwIDBoMTB2MTBINjB6bTIwIDBoMTB2ODBIODB6bTIwIDBoMTB2MzBoLTEwem0yMCAwaDIwdjIwaC0yMHptMzAgMGgxMHYxMGgtMTB6bTQwIDBoMTB2MjBoLTEwem0yMCAwaDEwdjEwaC0xMHptNDAgMGgxMHYyMGgtMTB6bTIwIDBoMjB2MjBoLTIwem0zMCAwaDEwdjEwaC0xMHptMzAgMGgxMHYxMGgtMTB6bTIwIDBoMTB2MjBoLTEwem0yMCAwaDQwdjEwaC00MHptNTAgMGgyMHYxMGgtMjB6TTkwIDM3MGgxMHYyMEg5MHptMjAgMGgxMHY0MGgtMTB6bTEzMCAwaDEwdjcwaC0xMHptMjAgMGgxMHY1MGgtMTB6bTMwIDBoMTB2MTBoLTEwem0xMTAgMGgzMHYxMGgtMzB6bTQwIDBoMTB2MTBoLTEwek0wIDM4MGg3MHYxMEgwem0xMzAgMGgxMHYxMGgtMTB6bTMwIDBoMTB2MzBoLTEwem02MCAwaDEwdjEwaC0xMHptODAgMGgyMHYyMGgtMjB6bTMwIDBoMTB2MzBoLTEwem01MCAwaDEwdjEwaC0xMHptMjAgMGgxMHY0MGgtMTB6bTIwIDBoMTB2MTBoLTEwek0wIDM5MGgxMHY2MEgwem02MCAwaDEwdjYwSDYwem02MCAwaDEwdjMwaC0xMHptMzAgMGgxMHYyMGgtMTB6bTQwIDBoMTB2MzBoLTEwem02MCAwaDEwdjMwaC0xMHptMjAgMGgxMHYyMGgtMTB6bTIwIDBoMTB2MjBoLTEwem02MCAwaDEwdjEwaC0xMHptODAgMGgyMHYxMGgtMjB6TTIwIDQwMGgzMHYzMEgyMHptNzAgMGgxMHY0MEg5MHptOTAgMGgxMHY0MGgtMTB6bTMwIDBoMzB2MTBoLTMwem05MCAwaDEwdjEwaC0xMHptNDAgMGgxMHYzMGgtMTB6bTMwIDBoMzB2MTBoLTMwem0tMjMwIDEwaDEwdjMwaC0xMHptMzAgMGgxMHYxMGgtMTB6bTExMCAwaDEwdjEwaC0xMHptMzAgMGgyMHYxMGgtMjB6bTYwIDBoMTB2MjBoLTEwem00MCAwaDMwdjEwaC0zMHptLTMxMCAxMGgyMHYxMGgtMjB6bTUwIDBoMjB2MTBoLTIwem0xMjAgMGgxMHYyMGgtMTB6bTMwIDBoMjB2MTBoLTIwem02MCAwaDEwdjEwaC0xMHptMjAgMGgxMHYxMGgtMTB6bTQwIDBoMTB2MTBoLTEwem0tMzEwIDEwaDIwdjEwaC0yMHptNDAgMGgxMHYyMGgtMTB6bTIwIDBoMTB2MjBoLTEwem00MCAwaDEwdjEwaC0xMHptODAgMGgxMHYxMGgtMTB6bTIwIDBoMjB2MjBoLTIwem00MCAwaDEwdjIwaC0xMHptNTAgMGgxMHYxMGgtMTB6bTMwIDBoMjB2MTBoLTIwek0xMCA0NDBoNTB2MTBIMTB6bTkwIDBoMTB2MTBoLTEwem0yMCAwaDIwdjEwaC0yMHptNDAgMGgxMHYxMGgtMTB6bTMwIDBoMTB2MTBoLTEwem00MCAwaDEwdjEwaC0xMHptMjAgMGgyMHYxMGgtMjB6bTMwIDBoMTB2MTBoLTEwem01MCAwaDIwdjEwaC0yMHptMzAgMGgxMHYxMGgtMTB6bTcwIDBoMTB2MTBoLTEweiIvPgo8L3N2Zz4K" style="width:240px;height:240px;display:block;margin-bottom:16px">
+<div style="margin-bottom:4px;font-size:13px;font-weight:bold;color:#555">支付宝</div>
+<img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0MTAiIGhlaWdodD0iNDEwIiBzaGFwZS1yZW5kZXJpbmc9ImNyaXNwRWRnZXMiIHZpZXdCb3g9IjAgMCA0MTAgNDEwIj4KICA8cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjZmZmIi8+CiAgPHBhdGggZD0iTTAgMGg3MHYxMEgwem05MCAwaDIwdjEwSDkwem00MCAwaDcwdjEwaC03MHptODAgMGgxMHYxMGgtMTB6bTIwIDBoMTB2MTBoLTEwem01MCAwaDIwdjEwaC0yMHptNjAgMGg3MHYxMGgtNzB6TTAgMTBoMTB2NjBIMHptNjAgMGgxMHY2MEg2MHptODAgMGgyMHYxMGgtMjB6bTMwIDBoMzB2MTBoLTMwem0xMzAgMGgzMHYxMGgtMzB6bTQwIDBoMTB2NjBoLTEwem02MCAwaDEwdjYwaC0xMHpNMjAgMjBoMzB2MzBIMjB6bTYwIDBoMjB2MjBIODB6bTQwIDBoMjB2MTBoLTIwem0zMCAwaDEwdjMwaC0xMHptMjAgMGgyMHYxMGgtMjB6bTMwIDBoMjB2MTBoLTIwem0zMCAwaDIwdjEwaC0yMHptNDAgMGgxMHYxMGgtMTB6bTQwIDBoMjB2MTBoLTIwem01MCAwaDMwdjMwaC0zMHpNMTEwIDMwaDEwdjIwaC0xMHptNzAgMGgzMHYxMGgtMzB6bTQwIDBoMjB2MTBoLTIwem04MCAwaDEwdjEwaC0xMHptMjAgMGgxMHYxMGgtMTB6TTEwMCA0MGgxMHYzMGgtMTB6bTMwIDBoMjB2MTBoLTIwem00MCAwaDMwdjEwaC0zMHptNjAgMGg0MHYxMGgtNDB6bTYwIDBoMTB2MjBoLTEwem0yMCAwaDEwdjEwaC0xMHpNOTAgNTBoMTB2MTBIOTB6bTQwIDBoMTB2MTBoLTEwem0zMCAwaDIwdjEwaC0yMHptMzAgMGgzMHYxMGgtMzB6bTQwIDBoMzB2MTBoLTMwem01MCAwaDEwdjQwaC0xMHptMjAgMGgxMHYyMGgtMTB6TTEwIDYwaDUwdjEwSDEwem03MCAwaDEwdjEwSDgwem00MCAwaDEwdjMwaC0xMHptMjAgMGgxMHYyMGgtMTB6bTIwIDBoMTB2MTBoLTEwem0yMCAwaDEwdjQwaC0xMHptMjAgMGgxMHYxMGgtMTB6bTIwIDBoMTB2MTBoLTEwem0yMCAwaDEwdjQwaC0xMHptMjAgMGgxMHYxMGgtMTB6bTYwIDBoMTB2MTBoLTEwem0zMCAwaDUwdjEwaC01MHpNMTEwIDcwaDEwdjIwaC0xMHptODAgMGgxMHY0MGgtMTB6bTIwIDBoMTB2MTBoLTEwem00MCAwaDEwdjEwaC0xMHpNMzAgODBoMjB2MTBIMzB6bTMwIDBoMjB2MTBINjB6bTMwIDBoMTB2NDBIOTB6bTYwIDBoMzB2MTBoLTMwem03MCAwaDEwdjEwaC0xMHptNDAgMGgyMHYxMGgtMjB6bTMwIDBoMTB2MjBoLTEwem0yMCAwaDIwdjEwaC0yMHptNjAgMGgyMHYxMGgtMjB6TTIwIDkwaDEwdjIwSDIwem0yMCAwaDEwdjEwSDQwem0xMDAgMGgyMHYzMGgtMjB6bTMwIDBoMTB2MTBoLTEwem0zMCAwaDEwdjIwaC0xMHptNTAgMGgxMHYxMGgtMTB6bTIwIDBoMTB2MjBoLTEwem00MCAwaDEwdjEwaC0xMHptNDAgMGgyMHYxMGgtMjB6bTUwIDBoMTB2MTBoLTEwek0xMCAxMDBoMTB2MjBIMTB6bTIwIDBoMTB2MjBIMzB6bTIwIDBoMjB2MTBINTB6bTMwIDBoMTB2NDBIODB6bTMwIDBoMTB2MTBoLTEwem0yMCAwaDEwdjEwaC0xMHptMzAgMGgxMHYxMGgtMTB6bTcwIDBoMTB2MTBoLTEwem03MCAwaDEwdjEwaC0xMHptMzAgMGgxMHY4MGgtMTB6bTMwIDBoMTB2MTBoLTEwem0yMCAwaDIwdjEwaC0yMHpNNDAgMTEwaDIwdjEwSDQwem04MCAwaDEwdjEwaC0xMHptNTAgMGgxMHYyMGgtMTB6bTQwIDBoMTB2NTBoLTEwem00MCAwaDIwdjEwaC0yMHptNDAgMGgxMHYxMGgtMTB6bTIwIDBoMjB2MTBoLTIwem0zMCAwaDIwdjIwaC0yMHptMzAgMGgxMHYxMGgtMTB6bTMwIDBoMTB2NTBoLTEwek02MCAxMjBoMjB2MTBINjB6bTQwIDBoMjB2MTBoLTIwem01MCAwaDIwdjEwaC0yMHptMzAgMGgxMHYxMGgtMTB6bTQwIDBoMjB2MTBoLTIwem00MCAwaDEwdjEwaC0xMHptNjAgMGgxMHYxMGgtMTB6bTcwIDBoMTB2MTBoLTEwek0yMCAxMzBoMzB2MTBIMjB6bTUwIDBoMTB2MzBINzB6bTIwIDBoMTB2MzBIOTB6bTIwIDBoMTB2MTBoLTEwem0yMCAwaDIwdjEwaC0yMHptMzAgMGgxMHYyMGgtMTB6bTMwIDBoMTB2MTBoLTEwem0zMCAwaDEwdjEwaC0xMHptNzAgMGgxMHYyMGgtMTB6bTIwIDBoMTB2MTBoLTEwem00MCAwaDQwdjEwaC00MHpNMzAgMTQwaDIwdjEwSDMwem0zMCAwaDEwdjEwSDYwem02MCAwaDIwdjIwaC0yMHptNTAgMGgyMHYxMGgtMjB6bTcwIDBoMTB2MTBoLTEwem0yMCAwaDIwdjEwaC0yMHptNDAgMGgxMHYyMGgtMTB6bTQwIDBoMjB2MTBoLTIwek0wIDE1MGgxMHYxMEgwem0yMCAwaDEwdjIwSDIwem02MCAwaDEwdjIwSDgwem0yMCAwaDIwdjEwaC0yMHptNTAgMGgxMHYzMGgtMTB6bTIwIDBoMTB2OTBoLTEwem0yMCAwaDIwdjEwaC0yMHptMzAgMGgyMHYxMGgtMjB6bTQwIDBoMTB2MTBoLTEwem0yMCAwaDEwdjIwaC0xMHptMzAgMGgxMHY1MGgtMTB6bTUwIDBoNDB2MTBoLTQwek0xMCAxNjBoMTB2NDBIMTB6bTIwIDBoMTB2MzBIMzB6bTMwIDBoMTB2MTBINjB6bTUwIDBoMTB2MjBoLTEwem01MCAwaDEwdjEwaC0xMHptMzAgMGgxMHY4MGgtMTB6bTMwIDBoMTB2OTBoLTEwem0zMCAwaDEwdjYwaC0xMHptMjAgMGgxMHYzMGgtMTB6bTEwMCAwaDEwdjEwaC0xMHptMjAgMGgxMHYxMGgtMTB6TTAgMTcwaDEwdjEwSDB6bTQwIDBoMjB2MjBINDB6bTgwIDBoMzB2MTBoLTMwem02MCAwaDEwdjExMGgtMTB6bTIwIDBoMjB2ODBoLTIwem0zMCAwaDIwdjMwaC0yMHptMzAgMGgxMHYzMGgtMTB6bTQwIDBoMTB2MTBoLTEwem02MCAwaDEwdjQwaC0xMHptMjAgMGgxMHYxMGgtMTB6TTIwIDE4MGgxMHYxMEgyMHptNDAgMGg1MHYxMEg2MHptMTAwIDBoMTB2MzBoLTEwem0xMjAgMGgxMHYyMGgtMTB6bTQwIDBoMTB2MjBoLTEwem0zMCAwaDEwdjEwaC0xMHptMjAgMGgxMHYyMGgtMTB6bTMwIDBoMTB2MTBoLTEwek0wIDE5MGgxMHY2MEgwem00MCAwaDEwdjEwSDQwem03MCAwaDEwdjEwaC0xMHptMjAgMGgzMHYxMGgtMzB6bTE2MCAwaDIwdjEwaC0yMHptNDAgMGgyMHYxMGgtMjB6bTUwIDBoMTB2MjBoLTEwek0yMCAyMDBoMjB2MjBIMjB6bTMwIDBoMjB2MTBINTB6bTMwIDBoMTB2MjBIODB6bTIwIDBoMTB2MzBoLTEwem0yMCAwaDEwdjIwaC0xMHptMzAgMGgxMHYyMGgtMTB6bTgwIDBoMTB2NDBoLTEwem00MCAwaDEwdjcwaC0xMHptNzAgMGgxMHYxMGgtMTB6bTUwIDBoMjB2MTBoLTIwek0xMCAyMTBoMTB2MTBIMTB6bTMwIDBoMjB2MTBINDB6bTkwIDBoMjB2MjBoLTIwem0xMTAgMGgxMHYxMGgtMTB6bTQwIDBoMTB2MTBoLTEwem0yMCAwaDIwdjEwaC0yMHptNTAgMGgxMHYyMGgtMTB6bTIwIDBoMTB2MTBoLTEwek0zMCAyMjBoMTB2MTBIMzB6bTMwIDBoMTB2MTBINjB6bTMwIDBoMTB2NDBIOTB6bTcwIDBoMTB2MjBoLTEwem0xNDAgMGgxMHY3MGgtMTB6bTQwIDBoMTB2NDBoLTEwek03MCAyMzBoMTB2MTBINzB6bTUwIDBoMjB2MTBoLTIwem0xMjAgMGgzMHYxMGgtMzB6bTUwIDBoMTB2MTBoLTEwem0yMCAwaDMwdjEwaC0zMHptNjAgMGg0MHYxMGgtNDB6TTIwIDI0MGgyMHYxMEgyMHptMzAgMGgyMHYxMEg1MHptMzAgMGgxMHYxMEg4MHptNDAgMGgxMHYxMGgtMTB6bTMwIDBoMTB2MTBoLTEwem0xMzAgMGgxMHYyMGgtMTB6bTQwIDBoMTB2MzBoLTEwem0zMCAwaDEwdjIwaC0xMHptMjAgMGgyMHYxMGgtMjB6TTEwIDI1MGgxMHYxMEgxMHptMjAgMGgyMHYxMEgzMHptNzAgMGgyMHYxMGgtMjB6bTEzMCAwaDIwdjIwaC0yMHptNjAgMGgxMHYxMGgtMTB6bTcwIDBoMTB2MTBoLTEwem0yMCAwaDMwdjEwaC0zMHpNNTAgMjYwaDIwdjEwSDUwem05MCAwaDEwdjIwaC0xMHptODAgMGgxMHYyMGgtMTB6bTMwIDBoMjB2MTBoLTIwem02MCAwaDEwdjMwaC0xMHptNjAgMGgxMHYzMGgtMTB6bTIwIDBoMjB2MTBoLTIwek0wIDI3MGgzMHYxMEgwem00MCAwaDIwdjEwSDQwem02MCAwaDEwdjEwaC0xMHptOTAgMGgxMHY3MGgtMTB6bTIwIDBoMTB2MjBoLTEwem0yMCAwaDEwdjIwaC0xMHptMzAgMGgxMHYxMGgtMTB6bTIwIDBoMTB2MTBoLTEwem03MCAwaDIwdjEwaC0yMHptMzAgMGgxMHYxMGgtMTB6bTIwIDBoMTB2MjBoLTEwek0wIDI4MGgxMHY1MEgwem00MCAwaDEwdjEwSDQwem0yMCAwaDIwdjEwSDYwem0zMCAwaDEwdjEwSDkwem0yMCAwaDMwdjEwaC0zMHptNDAgMGgzMHYyMGgtMzB6bTkwIDBoMTB2MjBoLTEwem0zMCAwaDEwdjEwaC0xMHptNzAgMGgyMHYxMGgtMjB6bTUwIDBoMTB2NDBoLTEwek0zMCAyOTBoMTB2MTBIMzB6bTIwIDBoMTB2MTBINTB6bTIwIDBoMTB2NDBINzB6bTMwIDBoMjB2MTBoLTIwem00MCAwaDEwdjIwaC0xMHptNjAgMGgxMHYxMGgtMTB6bTIwIDBoMTB2MjBoLTEwem0zMCAwaDIwdjMwaC0yMHptOTAgMGgxMHYxMGgtMTB6bTIwIDBoMTB2MTBoLTEwem0yMCAwaDEwdjUwaC0xMHpNMTAgMzAwaDEwdjMwSDEwem01MCAwaDEwdjEwSDYwem0yMCAwaDIwdjEwSDgwem0zMCAwaDEwdjIwaC0xMHptMjAgMGgxMHYxMGgtMTB6bTUwIDBoMTB2MjBoLTEwem0zMCAwaDEwdjIwaC0xMHptNzAgMGgyMHYxMGgtMjB6bTMwIDBoMTB2NTBoLTEwem0yMCAwaDEwdjEwaC0xMHptMjAgMGgxMHYzMGgtMTB6bTUwIDBoMTB2MzBoLTEwek00MCAzMTBoMjB2MTBINDB6bTQwIDBoMTB2MTBIODB6bTIwIDBoMTB2MjBoLTEwem0yMCAwaDEwdjIwaC0xMHptMzAgMGgxMHYxMGgtMTB6bTUwIDBoMTB2MTBoLTEwem0zMCAwaDIwdjEwaC0yMHptNDAgMGgyMHYxMGgtMjB6bTUwIDBoMTB2ODBoLTEwem0yMCAwaDEwdjIwaC0xMHptMzAgMGgxMHY3MGgtMTB6TTQwIDMyMGgxMHYxMEg0MHptMjAgMGgxMHYxMEg2MHptMzAgMGgxMHYxMEg5MHptMTMwIDBoMTB2MTBoLTEwem0yMCAwaDEwdjEwaC0xMHptMjAgMGgxMHYzMGgtMTB6bTIwIDBoMjB2MTBoLTIwem01MCAwaDEwdjEwaC0xMHptMzAgMGgxMHY1MGgtMTB6TTgwIDMzMGgxMHYyMEg4MHptNjAgMGgyMHYxMGgtMjB6bTMwIDBoMTB2MjBoLTEwem0zMCAwaDIwdjIwaC0yMHptMzAgMGgxMHY1MGgtMTB6bTQwIDBoMTB2MzBoLTEwem0zMCAwaDEwdjIwaC0xMHptOTAgMGgxMHYxMGgtMTB6TTAgMzQwaDcwdjEwSDB6bTEwMCAwaDQwdjEwaC00MHptNTAgMGgxMHYyMGgtMTB6bTMwIDBoMTB2MTBoLTEwem00MCAwaDEwdjEwaC0xMHptMzAgMGgxMHYxMGgtMTB6bTMwIDBoMjB2MTBoLTIwem02MCAwaDEwdjEwaC0xMHpNMCAzNTBoMTB2NjBIMHptNjAgMGgxMHY2MEg2MHptNTAgMGgyMHYxMGgtMjB6bTMwIDBoMTB2MjBoLTEwem0yMCAwaDEwdjIwaC0xMHptNDAgMGgxMHYyMGgtMTB6bTkwIDBoMTB2NDBoLTEwem0xMDAgMGgyMHYxMGgtMjB6TTIwIDM2MGgzMHYzMEgyMHptNjAgMGgzMHYxMEg4MHptNTAgMGgxMHY0MGgtMTB6bTUwIDBoMjB2MTBoLTIwem00MCAwaDEwdjIwaC0xMHptMzAgMGgyMHYxMGgtMjB6bTUwIDBoMjB2MTBoLTIwem0zMCAwaDMwdjEwaC0zMHptNjAgMGgxMHYxMGgtMTB6TTgwIDM3MGgxMHYxMEg4MHptNzAgMGgxMHYxMGgtMTB6bTQwIDBoMTB2MTBoLTEwem01MCAwaDEwdjEwaC0xMHptMjAgMGgyMHYyMGgtMjB6bTkwIDBoMTB2MjBoLTEwem0zMCAwaDEwdjEwaC0xMHptMjAgMGgxMHYzMGgtMTB6bS0zMDAgMTBoMTB2MTBoLTEwem0yMCAwaDEwdjEwaC0xMHptNTAgMGgxMHYxMGgtMTB6bTMwIDBoMjB2MTBoLTIwem01MCAwaDEwdjEwaC0xMHptNjAgMGgxMHYxMGgtMTB6bTIwIDBoMTB2MjBoLTEwem0zMCAwaDEwdjMwaC0xMHptMzAgMGgxMHYxMGgtMTB6bS0yODAgMTBoMTB2MTBoLTEwem0zMCAwaDMwdjIwaC0zMHptNTAgMGgxMHYxMGgtMTB6bTcwIDBoMTB2MjBoLTEwem0yMCAwaDEwdjEwaC0xMHptMjAgMGgxMHYxMGgtMTB6bTgwIDBoMTB2MjBoLTEwek0xMCA0MDBoNTB2MTBIMTB6bTE2MCAwaDEwdjEwaC0xMHptMzAgMGgzMHYxMGgtMzB6bTUwIDBoMTB2MTBoLTEwem0yMCAwaDEwdjEwaC0xMHptNTAgMGgxMHYxMGgtMTB6bTUwIDBoMTB2MTBoLTEweiIvPgo8L3N2Zz4K" style="width:240px;height:240px;display:block">
+</div>
+<div id="vc-page5" style="display:none"><div class="vc-row">
+  <div class="vc-part">
+    <div style="font-weight:bold;font-size:13px;color:#444;margin-bottom:5px;height:28px;line-height:28px">B站</div>
+    <div class="vc-item"><span class="vc-lbl">总进度</span><span class="vc-num"></span><span class="vc-ctl"><span class="vc-dual" id="vc-biliProgressEnabled" data-color="yellow" data-value="${s.biliProgressEnabled ? '1' : '0'}" style="display:flex;gap:0;width:100%;max-width:180px"><button type="button" style="padding:0;line-height:25px;border:1px solid ${s.biliProgressEnabled ? '#ff9800' : '#ffb300'};border-radius:4px 0 0 4px;background:${s.biliProgressEnabled ? '#ffd54f' : '#fff3cd'};color:${s.biliProgressEnabled ? '#3e2723' : '#5d4037'};cursor:pointer;font-size:13px;flex:1">开启</button><button type="button" style="padding:0;line-height:25px;border:1px solid ${s.biliProgressEnabled ? '#ffb300' : '#ff9800'};border-left:none;border-radius:0 4px 4px 0;background:${s.biliProgressEnabled ? '#fff3cd' : '#ffd54f'};color:${s.biliProgressEnabled ? '#5d4037' : '#3e2723'};cursor:pointer;font-size:13px;flex:1">关闭</button></span></span></div>
+    <div class="vc-item"><span class="vc-lbl">切集按钮</span><span class="vc-num"></span><span class="vc-ctl"><span id="vc-autoNextEnabled" data-value="${s.autoNextEnabled ? '1' : '0'}" class="vc-dual" style="display:flex;gap:0;width:100%;max-width:180px" data-color="yellow"><button type="button" style="padding:0;line-height:25px;border:1px solid ${s.autoNextEnabled ? '#ff9800' : '#ffb300'};border-radius:4px 0 0 4px;background:${s.autoNextEnabled ? '#ffd54f' : '#fff3cd'};color:${s.autoNextEnabled ? '#3e2723' : '#5d4037'};cursor:pointer;font-size:13px;flex:1">开启</button><button type="button" style="padding:0;line-height:25px;border:1px solid ${s.autoNextEnabled ? '#ffb300' : '#ff9800'};border-left:none;border-radius:0 4px 4px 0;background:${s.autoNextEnabled ? '#fff3cd' : '#ffd54f'};color:${s.autoNextEnabled ? '#5d4037' : '#3e2723'};cursor:pointer;font-size:13px;flex:1">关闭</button></span></span></div>
+  </div>
+  <div class="vc-part">
+  </div>
+</div></div></div>
 <div style="display:flex;gap:12px;margin-top:8px">
-  <span style="flex:1;min-width:0">
-    <button id="vc-pg1" style="padding:8px 16px;border:1px solid #64b5f6;border-top:none;border-radius:0 0 0 6px;background:#90caf9;color:#0d47a1;cursor:pointer;font-size:13px;float:left;position:relative;z-index:1">基础</button>
-    <button id="vc-pg2" style="padding:8px 16px;border:1px solid #90caf9;background:#e3f2fd;color:#1565c0;cursor:pointer;font-size:13px;float:left;margin-left:-2px;position:relative">工具</button>
-    <button id="vc-pg3" style="padding:8px 16px;border:1px solid #90caf9;background:#e3f2fd;color:#1565c0;cursor:pointer;font-size:13px;float:left;margin-left:-2px;position:relative">自动</button>
-    <button id="vc-pg4" style="padding:8px 16px;border:1px solid #90caf9;border-radius:0 0 6px 0;background:#e3f2fd;color:#1565c0;cursor:pointer;font-size:13px;float:left;margin-left:-2px;position:relative">说明</button>
-    <span style="clear:both"></span>
+  <span style="display:flex;flex:1;min-width:0">
+    <button id="vc-pg1" style="flex:1;padding:6px 0;min-width:0;border:1px solid #64b5f6;border-right:none;border-top:none;border-radius:0 0 0 6px;background:#90caf9;color:#0d47a1;cursor:pointer;font-size:12px;text-align:center;position:relative;z-index:1">基础</button>
+    <button id="vc-pg2" style="flex:1;padding:6px 0;min-width:0;border:1px solid #90caf9;border-right:none;border-left:none;border-top:none;background:#e3f2fd;color:#1565c0;cursor:pointer;font-size:12px;text-align:center;position:relative">工具</button>
+    <button id="vc-pg3" style="flex:1;padding:6px 0;min-width:0;border:1px solid #90caf9;border-right:none;border-left:none;border-top:none;background:#e3f2fd;color:#1565c0;cursor:pointer;font-size:12px;text-align:center;position:relative">自动</button>
+    <button id="vc-pg5" style="flex:1;padding:6px 0;min-width:0;border:1px solid #90caf9;border-right:none;border-left:none;border-top:none;background:#e3f2fd;color:#1565c0;cursor:pointer;font-size:12px;text-align:center;position:relative">站点</button>
+    <button id="vc-pg4" style="flex:1;padding:6px 0;min-width:0;border:1px solid #90caf9;border-left:none;border-top:none;border-radius:0 0 6px 0;background:#e3f2fd;color:#1565c0;cursor:pointer;font-size:12px;text-align:center;position:relative">关于</button>
   </span>
-  <span style="flex:1;min-width:0;display:flex;justify-content:space-between">
+  <span style="flex:1;min-width:0;display:flex;justify-content:flex-end;gap:8px">
     <button class="vc-btn vc-btn-reset" id="vc-reset">恢复默认</button>
     <button class="vc-btn vc-btn-save" id="vc-save">保存</button>
     <button class="vc-btn vc-btn-cancel" id="vc-cancel">取消</button>
@@ -948,9 +1154,8 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
     }
 
     function bindSettingsEvents(panel) {
-        var pages = [panel.querySelector('#vc-page1'), panel.querySelector('#vc-page2'), panel.querySelector('#vc-page3'), panel.querySelector('#vc-page4')];
-        var btns = [panel.querySelector('#vc-pg1'), panel.querySelector('#vc-pg2'), panel.querySelector('#vc-pg3'), panel.querySelector('#vc-pg4')];
-        // 初始化到上次标签页
+        var pages = [panel.querySelector('#vc-page1'), panel.querySelector('#vc-page2'), panel.querySelector('#vc-page3'), panel.querySelector('#vc-page5'), panel.querySelector('#vc-page4')];
+        var btns = [panel.querySelector('#vc-pg1'), panel.querySelector('#vc-pg2'), panel.querySelector('#vc-pg3'), panel.querySelector('#vc-pg5'), panel.querySelector('#vc-pg4')];
         var initPage = settings.lastTab || 0;
         pages.forEach(function(p,i) { p.style.display = i === initPage ? '' : 'none'; });
         function setTabStyle(act) {
@@ -964,7 +1169,6 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
             });
         }
         setTabStyle(initPage);
-        // 锁定页面1高度（先隐藏面板避免闪烁，测量后显示）
         panel.style.visibility = 'hidden';
         requestAnimationFrame(function() {
             var prev = initPage;
@@ -972,6 +1176,7 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
             requestAnimationFrame(function() {
                 var c = panel.querySelector('#vc-content');
                 c.style.minHeight = c.scrollHeight + 'px';
+                c.style.maxHeight = c.scrollHeight + 'px';
                 if (prev !== 0) { pages.forEach(function(p,i) { p.style.display = i === prev ? '' : 'none'; }); }
                 panel.style.visibility = '';
             });
@@ -1012,11 +1217,7 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
             var inBg = y ? '#fff3cd' : '#e3f2fd', inColor = y ? '#5d4037' : '#1565c0', inBd = y ? '#ffb300' : '#90caf9';
             btns.forEach(function(btn, i) {
                 btn.addEventListener('click', function() {
-                    if (dual.id === 'vc-hideMenuEntry' && i === 1 && !panel.querySelector('#vc-openSettingsKey').value.trim()) {
-                        Toast('请先设置快捷键，再隐藏入口');
-                        return;
-                    }
-                    dual.dataset.value = (dual.id === 'vc-hideMenuEntry') ? (i === 0 ? '0' : '1') : (i === 0 ? '1' : '0');
+                    dual.dataset.value = (i === 0 ? '1' : '0');
                     btns.forEach(function(b, j) {
                         var act = j === i;
                         b.style.background = act ? acBg : inBg;
@@ -1028,12 +1229,9 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
         });
 
         (function() {
-            var sites = Object.keys(siteSettings);
-            panel.querySelector('#vc-memorySites').value = sites.join('\n');
             panel.querySelector('#vc-noMemorySites').value = settings.noMemorySites || '';
         })();
 
-        // 禁止当前网站到禁止记忆
         panel.querySelector('#vc-addNomemory').addEventListener('click', function() {
             var ta = panel.querySelector('#vc-noMemorySites');
             var host = getCurrentSite();
@@ -1087,7 +1285,6 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
                 sR.value = Math.round(s * 100);
                 hR.value = Math.round(h);
                 updateLabels();
-                // 空滤镜或默认值视为"默认"
                 var f = v.style.filter || '';
                 if (!f) { preset.value = '默认'; }
                 else {
@@ -1232,6 +1429,26 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
                 if (h) removeSiteAuto(h);
             }
             saveSettings();
+            (function() {
+                var bpEl = document.getElementById('vc-bili-progress');
+                if (settings.biliProgressEnabled) {
+                    if (!bpEl && location.hostname === 'www.bilibili.com' && !biliProgress.timer) {
+                        biliProgress.timer = setInterval(function() {
+                            if (document.querySelector('.bpx-player-ctrl-time-label')) {
+                                clearInterval(biliProgress.timer);
+                                biliProgress.timer = null;
+                                biliProgress.setup();
+                            }
+                        }, 500);
+                    }
+                } else {
+                    if (bpEl) { bpEl.remove(); biliProgress.el = null; biliProgress.data = null; }
+                    if (biliProgress.updateInterval) { clearInterval(biliProgress.updateInterval); biliProgress.updateInterval = null; }
+                }
+            })();
+            injectNextUI();
+            setupAutoNext(_webAutoNextDisabled ? 'off' : getNextMode());
+            initFav();
             document.removeEventListener('keydown', onEsc);
             panel.remove();
             Toast(settings.hideMenuEntry ? '设置已保存，刷新页面后生效' : '设置已保存，立即生效');
@@ -1274,8 +1491,7 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
         };
         const getBool = (id) => {
             var el = panel.querySelector('#' + id);
-            if (el.dataset && el.dataset.value !== undefined) return el.dataset.value === '1';
-            return el.value === '1';
+            return !!(el && el.dataset.value === '1');
         };
 
         settings.togglePlay = getKey('vc-togglePlay');
@@ -1327,11 +1543,226 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
         settings.toastDuration = getNum('vc-toastDuration');
         if (isNaN(settings.toastDuration)) settings.toastDuration = DEFAULT_SETTINGS.toastDuration;
 
-        settings.hideMenuEntry = getBool('vc-hideMenuEntry');
-        if (!settings.openSettingsKey) settings.hideMenuEntry = false;
-
         settings.siteMemoryEnabled = getBool('vc-siteMemoryEnabled');
+        settings.biliProgressEnabled = getBool('vc-biliProgressEnabled');
+        settings.favEnabled = getBool('vc-favEnabled');
+        settings.autoNextEnabled = getBool('vc-autoNextEnabled');
         settings.noMemorySites = getVal('vc-noMemorySites');
+    }
+
+    // ======================= 视频收藏 =======================
+    var FAV_KEY = 'vc_fav_list', FAV_PANEL_KEY = 'vc_fav_panel';
+    var _favGroup, _favPanel, _favList, _favState = { opened: false, batch: false, checked: new Set() };
+
+    function initFav() {
+        var old = document.getElementById('vc-fav-group');
+        if (old) { old.remove(); _favPanel && _favPanel.remove(); _favState.opened = false; }
+        if (!settings.favEnabled) return;
+        if (!document.querySelector('video')) return;
+
+        function fl() { try { return JSON.parse(GM_getValue(FAV_KEY, '[]')); } catch { return []; } }
+        function fs(v) { GM_setValue(FAV_KEY, JSON.stringify(v)); }
+        function nu(u) { try { var x = new URL(u); x.hash = x.search = ''; return x.origin + x.pathname.replace(/\/$/,''); } catch { return u; } }
+        function es(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+        function pi() {
+            return { url: nu(location.href), full: location.href, title: document.title || '无标题' };
+        }
+
+        _favGroup = document.createElement('div');
+        _favGroup.id = 'vc-fav-group';
+        _favGroup.style.cssText = 'position:fixed;left:0;top:calc(25% - 66px);width:36px;height:84px;z-index:999999';
+        var playBtn = document.createElement('div');
+        playBtn.id = 'vc-fav-play';
+        playBtn.textContent = '▶';
+        playBtn.style.cssText = 'position:absolute;top:0;left:0;width:36px;height:36px;background:#e3f2fd;display:flex;align-items:center;justify-content:center;cursor:pointer;user-select:none;color:#1565c0;font-size:20px;font-weight:1000;line-height:1;opacity:0;pointer-events:none;transition:opacity 0.2s';
+        playBtn.style.display = 'flex';
+        playBtn.style.alignItems = 'center';
+        playBtn.style.justifyContent = 'center';
+        playBtn.onmouseenter = function() { openFav(); };
+        var plusBtn = document.createElement('div');
+        plusBtn.id = 'vc-fav-plus';
+        plusBtn.textContent = '＋';
+        plusBtn.style.cssText = 'position:absolute;bottom:0;left:0;width:36px;height:36px;background:#e3f2fd;display:flex;align-items:center;justify-content:center;cursor:pointer;user-select:none;color:#1565c0;font-size:28px;font-weight:1000;line-height:1';
+        plusBtn.style.display = 'flex';
+        plusBtn.style.alignItems = 'center';
+        plusBtn.style.justifyContent = 'center';
+        plusBtn.onclick = toggleFav;
+        _favGroup.append(playBtn, plusBtn);
+
+        // 鼠标移入浮球组显示 ▶，移出隐藏
+        _favGroup.onmouseenter = function() {
+            playBtn.style.opacity = '1';
+            playBtn.style.pointerEvents = 'auto';
+        };
+        _favGroup.onmouseleave = function() {
+            if (!_favState.opened) {
+                playBtn.style.opacity = '0';
+                playBtn.style.pointerEvents = 'none';
+            }
+        };
+        document.body.appendChild(_favGroup);
+
+        _favPanel = document.createElement('div');
+        _favPanel.id = 'vc-fav-panel';
+        _favPanel.style.cssText = 'position:fixed;left:-380px;top:25%;z-index:999998;width:360px;max-height:70vh;background:#e3f2fd;display:flex;flex-direction:column;font:13px/1.5 sans-serif;color:#222;transition:left .3s;overflow:hidden';
+        _favPanel.innerHTML = '<div style="display:flex;align-items:center;gap:8px;padding:4px 16px;border-bottom:1px solid rgba(0,0,0,.06);min-height:28px">'
+            + '<div id="fav-tbar-norm"></div>'
+            + '<div id="fav-tbar-batch" style="display:none">'
+            + '<button id="fav-sel" style="height:20px;border:1px solid #1565c0;border-radius:4px;font-size:13px;cursor:pointer;background:transparent;color:#1565c0;padding:0 14px">全选</button>'
+            + '<button id="fav-conf" style="height:20px;border:none;border-radius:4px;font-size:13px;cursor:pointer;background:#e74c3c;color:#fff;padding:0 14px;margin-left:4px">确定</button>'
+            + '<button id="fav-cancel" style="height:20px;border:1px solid #1565c0;border-radius:4px;font-size:13px;cursor:pointer;background:transparent;color:#1565c0;padding:0 14px;margin-left:4px">取消</button>'
+            + '</div>'
+            + '<span style="flex:1"></span>'
+            + '<button id="fav-trash" title="批量删除" style="background:none;border:none;cursor:pointer;height:20px;width:20px;display:inline-flex;align-items:center;justify-content:center;font-size:16px;color:#333;padding:0">🗑</button>'
+            + '<button id="fav-close" title="关闭" style="background:none;border:none;cursor:pointer;height:20px;width:20px;display:inline-flex;align-items:center;justify-content:center;font-size:16px;color:#333;padding:0">✕</button>'
+            + '</div>'
+            + '<div id="fav-list" style="flex:1;overflow-y:auto;padding:4px 8px;min-height:60px;max-height:320px;user-select:none"><div style="text-align:center;color:#999;padding:28px 0;font-size:13px">暂无收藏</div></div>';
+        document.body.appendChild(_favPanel);
+        _favList = _favPanel.querySelector('#fav-list');
+
+        function openFav() {
+            if (_favState.opened) return;
+            _favState.opened = true;
+            _favPanel.style.left = '0';
+            _favGroup.style.opacity = '0';
+            _favGroup.style.pointerEvents = 'none';
+            renderFav();
+        }
+        function closeFav() {
+            if (_favState.batch) { _favState.batch = false; _favState.checked.clear(); }
+            _favState.opened = false;
+            _favPanel.style.left = '-380px';
+            _favGroup.style.opacity = '';
+            _favGroup.style.pointerEvents = '';
+            playBtn.style.opacity = '0';
+            playBtn.style.pointerEvents = 'none';
+            GM_setValue(FAV_PANEL_KEY, '0');
+        }
+        _favPanel.querySelector('#fav-close').onclick = closeFav;
+        _favPanel.querySelector('#fav-trash').onclick = function() {
+            _favState.batch = true;
+            _favState.checked.clear();
+            renderFav();
+        };
+        _favPanel.querySelector('#fav-sel').onclick = function() {
+            var vids = fl();
+            if (_favState.checked.size === vids.length) _favState.checked.clear();
+            else vids.forEach(function(_, i) { _favState.checked.add(i); });
+            renderFav();
+            this.textContent = _favState.checked.size === fl().length ? '取消全选' : '全选';
+        };
+        _favPanel.querySelector('#fav-conf').onclick = function() {
+            if (!_favState.checked.size) return;
+            var vids = fl();
+            Array.from(_favState.checked).sort(function(a, b) { return b - a; }).forEach(function(i) { vids.splice(i, 1); });
+            fs(vids);
+            _favState.batch = false;
+            _favState.checked.clear();
+            renderFav();
+        };
+        _favPanel.querySelector('#fav-cancel').onclick = function() {
+            _favState.batch = false;
+            _favState.checked.clear();
+            renderFav();
+        };
+
+        function toggleFav() {
+            var info = pi(), vids = fl();
+            var idx = vids.findIndex(function(v) { return nu(v.url) === info.url; });
+            if (idx !== -1) vids.splice(idx, 1);
+            else vids.push({ url: info.url, full: info.full, title: info.title, addedAt: Date.now() });
+            fs(vids);
+            renderFav();
+        }
+
+        function renderFav() {
+            var vids = fl(), curUrl = pi().url, isBatch = _favState.batch;
+            var norm = _favPanel.querySelector('#fav-tbar-norm'), bat = _favPanel.querySelector('#fav-tbar-batch');
+            norm.style.display = isBatch ? 'none' : '';
+            bat.style.display = isBatch ? '' : 'none';
+            var trash = _favPanel.querySelector('#fav-trash');
+            trash.style.display = isBatch ? 'none' : '';
+            var idx2 = vids.findIndex(function(v) { return nu(v.url) === curUrl; });
+            var plus = document.getElementById('vc-fav-plus');
+            if (plus) {
+                plus.textContent = idx2 !== -1 ? '−' : '＋';
+                plus.style.color = idx2 !== -1 ? '#e74c3c' : '#1565c0';
+            }
+            if (!vids.length) {
+                _favList.innerHTML = '<div style="text-align:center;color:#999;padding:28px 0;font-size:13px">暂无收藏</div>';
+                return;
+            }
+            _favList.innerHTML = vids.map(function(v, i) {
+                var c = isBatch && _favState.checked.has(i);
+                return '<div class="fav-item" style="display:flex;align-items:center;gap:6px;padding:6px;cursor:pointer;background:' + (c ? '#90caf9' : '#e3f2fd') + '" data-i="' + i + '">'
+                    + (isBatch ? '<input type="checkbox" class="fav-cb"' + (c ? ' checked' : '') + ' style="width:16px;height:16px;flex-shrink:0;accent-color:#1565c0;cursor:pointer;margin:0">' : '')
+                    + '<span style="width:22px;flex-shrink:0;font-size:11px;color:#333;text-align:center">' + (i + 1) + '</span>'
+                    + '<div style="flex:1;min-width:0"><div style="font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:' + (nu(v.url) === curUrl ? '#e74c3c;font-weight:600' : '#222') + '">' + es(v.title) + '</div></div>'
+                    + (isBatch ? '' : '<span class="fav-copy" style="flex-shrink:0;font-size:13px;color:#1565c0;cursor:pointer;padding:0 4px">🔗</span>') + '</div>';
+            }).join('');
+
+            _favList.querySelectorAll('.fav-item').forEach(function(el, idx) {
+                // 悬停变色
+                el.onmouseenter = function() { el.style.background = '#90caf9'; };
+                el.onmouseleave = function() {
+                    var cb = el.querySelector('.fav-cb');
+                    el.style.background = (cb && cb.checked) ? '#90caf9' : '#e3f2fd';
+                };
+                if (isBatch) {
+                    var cb = el.querySelector('.fav-cb');
+                    if (cb) cb.onchange = function() {
+                        var i2 = parseInt(el.dataset.i);
+                        this.checked ? _favState.checked.add(i2) : _favState.checked.delete(i2);
+                        var sel = _favPanel.querySelector('#fav-sel');
+                        sel.textContent = _favState.checked.size === vids.length ? '取消全选' : '全选';
+                    };
+                } else {
+                    el.onclick = function(e) {
+                        if (e.target.classList.contains('fav-copy')) return;
+                        var vids2 = fl(), i2 = parseInt(el.dataset.i);
+                        if (_favState.opened && vids2[i2]) { GM_setValue(FAV_PANEL_KEY, '1'); location.href = vids2[i2].url; }
+                    };
+                    var copyBtn = el.querySelector('.fav-copy');
+                    if (copyBtn) copyBtn.onclick = function(e) {
+                        e.stopPropagation();
+                        var vids2 = fl(), i2 = parseInt(el.dataset.i);
+                        if (vids2[i2]) {
+                            navigator.clipboard.writeText(vids2[i2].url).catch(function() {});
+                        }
+                    };
+                }
+            });
+            var selBtn = _favPanel.querySelector('#fav-sel');
+            selBtn.textContent = _favState.checked.size === vids.length ? '取消全选' : '全选';
+            // 滚动到当前页面所在项
+            var curIdx = vids.findIndex(function(v) { return nu(v.url) === curUrl; });
+            if (curIdx >= 0 && _favList.children[curIdx]) {
+                _favList.children[curIdx].scrollIntoView({ block: 'nearest', behavior: 'auto' });
+            }
+        }
+
+        if (GM_getValue(FAV_PANEL_KEY, '0') === '1') {
+            GM_setValue(FAV_PANEL_KEY, '0');
+            _favState.opened = true;
+            _favPanel.style.left = '0';
+            _favGroup.style.opacity = '0';
+            _favGroup.style.pointerEvents = 'none';
+            renderFav();
+        }
+
+        // 监听网址变化（B站 SPA 切集时更新收藏按钮状态）
+        var _favLastUrl = pi().url;
+        setInterval(function() {
+            var cur = pi().url;
+            if (cur !== _favLastUrl) {
+                _favLastUrl = cur;
+                var plus = document.getElementById('vc-fav-plus');
+                if (!plus) return;
+                var vids = fl(), idx = vids.findIndex(function(v) { return nu(v.url) === cur; });
+                plus.textContent = idx !== -1 ? '−' : '＋';
+                plus.style.color = idx !== -1 ? '#e74c3c' : '#1565c0';
+            }
+        }, 1000);
     }
 
     function init() {
@@ -1343,8 +1774,8 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
 
         document.addEventListener('fullscreenchange', function () {
             var host = document.fullscreenElement || document.body;
-            if (host.tagName === 'VIDEO') host = host.parentElement;
             if (_toastEl && _toastEl.parentNode !== host) host.appendChild(_toastEl);
+            if (host && host.tagName === 'VIDEO') host = host.parentElement;
             var pnl = document.getElementById('vc-settings-panel');
             if (pnl && pnl.parentNode !== host) {
                 host.appendChild(pnl);
@@ -1353,7 +1784,6 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
         });
 
         document.addEventListener('keydown', onKeyDown, true);
-        // 画面拖动
         document.addEventListener('mousedown', function(e) {
             if (!_panVideo || e.button !== 0) return;
             if (!_panVideo.contains(e.target) && e.target !== _panVideo) return;
@@ -1373,6 +1803,10 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
             if (_panVideo) { _panVideo._vcPanning = false; _panVideo.style.cursor = 'grab'; }
         });
         bindAllVideos();
+        biliProgressInit();
+        setInterval(injectNextUI, 2000);
+        setupAutoNext(_webAutoNextDisabled ? 'off' : getNextMode());
+        initFav();
 
         document.addEventListener('vcAddShadowRoot', function (e) {
             if (e.detail && e.detail.shadowRoot) {
@@ -1390,14 +1824,28 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
                     if (node.nodeType === 1) {
                         if (node.matches && node.matches(VIDEO_SEL)) {
                             bindVideoEvents(node);
+                            if (settings.favEnabled && !document.getElementById('vc-fav-group')) {
+                                initFav();
+                            }
                         } else if (node.querySelectorAll) {
-                            node.querySelectorAll(VIDEO_SEL).forEach(bindVideoEvents);
+                            node.querySelectorAll(VIDEO_SEL).forEach(function(v) {
+                                bindVideoEvents(v);
+                                if (settings.favEnabled && !document.getElementById('vc-fav-group')) {
+                                    initFav();
+                                }
+                            });
                         }
                     }
                 }
             }
         });
         observer.observe(document.documentElement, { childList: true, subtree: true });
+
+        setTimeout(function() {
+            if (settings.favEnabled && !document.getElementById('vc-fav-group')) {
+                initFav();
+            }
+        }, 500);
 
         if (!settings.hideMenuEntry && typeof GM_registerMenuCommand === 'function') {
             GM_registerMenuCommand('视频控制器 设置', openSettings);
