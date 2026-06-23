@@ -2,7 +2,7 @@
 // @name         视频控制器
 // @namespace    video-controller
 // @description  120+KB的极简视频控制器，适配HTML5播放器。支持倍速（0.25x–16x）、音量增强（最高5x）、亮度增强（最高3x）。常规快捷键操作：倍速/快进/音量/逐帧/亮度/画面缩放。此外，支持屏幕全屏/网页全屏/旋转90°/水平翻转/画面拖动/截图/画中画/纯净模式，支持自动记忆网站设置/全局自动设置/色彩模式更改/区间循环播放。
-// @version      1.2.2
+// @version      1.2.3
 // @license      MIT
 // @author       Qiu Zongman
 // @homepageURL  https://gitee.com/qiuzongman/video-controller
@@ -760,6 +760,18 @@
         _webAutoNextDisabled = settings.autoNextWebDisabled || false;
         if (document.querySelector('#vc-next-ui')) return;
         var container = document.querySelector('.base-video-sections-v1,.video-pod.video-pod');
+        // 番剧页面
+        if (!container && isBangumi()) {
+            var ss = document.querySelector('.SectionSelector_SectionSelector__TZ_QZ');
+            if (!ss) return;
+            var div = document.createElement('div');
+            div.id = 'vc-next-ui';
+            div.style.cssText = 'display:flex;align-items:center;gap:10px;padding:2px 16px;margin:0;line-height:1;font-size:13px;color:var(--text3,#99a2aa)';
+            div.innerHTML = '<span class="vc-nl">自动切集</span><span class="vc-ns" data-key="enabled"></span><span class="vc-nl" style="margin-left:6px">倒序</span><span class="vc-ns" data-key="reverse"></span>';
+            ss.parentNode.insertBefore(div, ss);
+            buildNextToggles(div);
+            return;
+        }
         if (!container) return;
         var div = document.createElement('div');
         div.id = 'vc-next-ui';
@@ -768,7 +780,10 @@
         var ref = container.querySelector('.header-top,.video-sections-head');
         if (ref) { ref.parentNode.insertBefore(div, ref); }
         else { container.insertBefore(div, container.firstChild); }
+        buildNextToggles(div);
+    }
 
+    function buildNextToggles(div) {
         div.querySelectorAll('.vc-ns').forEach(function(el) {
             var key = el.getAttribute('data-key');
             var toggle = document.createElement('span');
@@ -804,6 +819,37 @@
     }
 
     function _onVideoEndedAuto(mode) {
+        // 番剧页面
+        if (isBangumi()) {
+            var cards = document.querySelectorAll('.numberListItem_number_list_item__T2VKO');
+            if (!cards.length) return;
+            for (var i = 0; i < cards.length; i++) {
+                if (cards[i].classList.contains('numberListItem_select__WgCVr')) {
+                    var target;
+                    if (mode === 'reverse') {
+                        target = i > 0 ? cards[i - 1] : cards[cards.length - 1];
+                    } else {
+                        target = i < cards.length - 1 ? cards[i + 1] : cards[0];
+                    }
+                    // 跨季切换：到边界时找下一季
+                    if ((mode === 'reverse' && i === 0) || (mode !== 'reverse' && i === cards.length - 1)) {
+                        var ss = document.querySelectorAll('.SectionSelector_sectionItem__rFNEH');
+                        for (var si = 0; si < ss.length; si++) {
+                            if (ss[si].classList.contains('SectionSelector_active__dySMp')) {
+                                var nextSi = mode === 'reverse' ? (si > 0 ? si - 1 : ss.length - 1) : (si < ss.length - 1 ? si + 1 : 0);
+                                ss[nextSi].click();
+                                return;
+                            }
+                        }
+                    }
+                    var link = target.querySelector('a');
+                    if (link) { link.click(); }
+                    return;
+                }
+            }
+            return;
+        }
+        // 普通视频页面
         var cards = document.querySelectorAll('.video-episode-card,.video-pod__item');
         if (!cards.length) return;
         for (var i = 0; i < cards.length; i++) {
@@ -824,6 +870,10 @@
 
     function getNextMode() {
         return settings.autoNextEnabled ? (settings.autoNextReverse ? 'reverse' : 'on') : 'off';
+    }
+
+    function isBangumi() {
+        return location.pathname.indexOf('/bangumi/play/') >= 0;
     }
 
     function setupAutoNext(mode) {
@@ -1111,7 +1161,7 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
   </div>
 </div></div>
 <div id="vc-page4" style="display:none">
-<div style="font-weight:bold;font-size:13px;color:#444;margin-bottom:5px;height:28px;line-height:28px">视频控制器 v1.2.2</div>
+<div style="font-weight:bold;font-size:13px;color:#444;margin-bottom:5px;height:28px;line-height:28px">视频控制器 v1.2.3</div>
 <div style="display:grid;grid-template-columns:52px 1fr;column-gap:6px;row-gap:2px">
 <span style="color:#555">作者</span><span><a href="https://space.bilibili.com/423767625" target="_blank" style="color:#1a73e8">邱宗满</a></span>
 <span style="color:#555">邮箱</span><span>qiuzongman@foxmail.com</span>
