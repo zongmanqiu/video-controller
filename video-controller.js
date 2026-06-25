@@ -2,7 +2,7 @@
 // @name         视频控制器
 // @namespace    video-controller
 // @description  120+KB的极简视频控制器，适配HTML5播放器。支持倍速（0.25x–16x）、音量增强（最高5x）、亮度增强（最高3x）。常规快捷键操作：倍速/快进/音量/逐帧/亮度/画面缩放。此外，支持屏幕全屏/网页全屏/旋转90°/水平翻转/画面拖动/截图/画中画/纯净模式，支持自动记忆网站设置/全局自动设置/色彩模式更改/区间循环播放。
-// @version      1.2.3
+// @version      1.2.4
 // @license      MIT
 // @author       Qiu Zongman
 // @homepageURL  https://gitee.com/qiuzongman/video-controller
@@ -664,19 +664,34 @@
                 var bvid = (location.pathname.match(/\/video\/([^\/?#]+)/) || [0,''])[1];
                 var p = parseInt(new URLSearchParams(location.search).get('p')) || 1;
                 if (data.pages && data.pages.length > 1) {
-                    var multi = data.pages.map(function(pg){ return pg.duration; });
+                    var multi = data.pages.map(function(pg){ return +pg.duration || 0; });
                     var before = p > 1 ? multi.slice(0, p - 1).reduce(function(a,b){return a+b;}) : 0;
-                    result.multi = { before: before, total: data.duration };
+                    result.multi = { before: before, total: multi.reduce(function(a,b){return a+b;}) };
                 }
                 if (data.ugc_season && data.ugc_season.sections) {
                     var eps = data.ugc_season.sections[0].episodes;
                     if (eps && eps.length > 1) {
+                        // 剧集总时长：多P视频累加所有分P
+                        function epTotal(ep) {
+                            if (ep.pages && ep.pages.length > 1) {
+                                var s = 0;
+                                for (var pi = 0; pi < ep.pages.length; pi++) s += +ep.pages[pi].duration || 0;
+                                return s;
+                            }
+                            return +ep.page.duration || 0;
+                        }
                         var total = 0, before = 0, found = false;
                         for (var i = 0; i < eps.length; i++) {
-                            total += eps[i].page.duration;
+                            var d = epTotal(eps[i]);
+                            total += d;
                             if (found) continue;
-                            if (eps[i].bvid === bvid) { found = true; }
-                            else { before += eps[i].page.duration; }
+                            if (eps[i].bvid === bvid) {
+                                found = true;
+                                if (data.pages && data.pages.length > 1 && p > 1) {
+                                    before += data.pages.slice(0, p - 1).reduce(function(a,b){return a + (+b || 0);}, 0);
+                                }
+                            }
+                            else { before += d; }
                         }
                         result.collection = { before: before, total: total };
                     }
@@ -706,9 +721,13 @@
             } catch(e) { this.updateInterval = setInterval(this.update.bind(this), 1000); }
             var mp = document.getElementById('multi_page');
             if (mp) mp.addEventListener('click', function() { setTimeout(function(){ biliProgress.data = biliProgress.getData(); biliProgress.update(); }, 500); });
+            // SPA 导航触发刷新
+            window.addEventListener('popstate', function() { biliProgress._lastUrl = ''; });
         },
         update: function() {
-            if (!this.el || !this.data) return;
+            if (!this.el) return;
+            this.data = this.getData();
+            if (!this.data) { this.el.textContent = ''; return; }
             var now = 0;
             try {
                 var p = window.player || window.fPlayer;
@@ -719,12 +738,15 @@
                 }
             } catch(e) {}
             var parts = [];
-            if (this.data.multi) {
-                var pct = (((now + this.data.multi.before) / this.data.multi.total) * 100).toFixed(1);
+            var multi = this.data.multi, coll = this.data.collection;
+            if (multi && multi.total > 0) {
+                var pct = (((now + multi.before) / multi.total) * 100).toFixed(1);
                 parts.push('多P: ' + pct + '%');
             }
-            if (this.data.collection) {
-                var pct = (((now + this.data.collection.before) / this.data.collection.total) * 100).toFixed(1);
+            if (coll && coll.total > 0) {
+                // 多P补偿：非第1P时补充已播分P的时长到合集before
+                var collBefore = coll.before + (multi && multi.before || 0);
+                var pct = (((now + collBefore) / coll.total) * 100).toFixed(1);
                 parts.push('合集: ' + pct + '%');
             }
             this.el.textContent = parts.join('    ');
@@ -1161,7 +1183,7 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
   </div>
 </div></div>
 <div id="vc-page4" style="display:none">
-<div style="font-weight:bold;font-size:13px;color:#444;margin-bottom:5px;height:28px;line-height:28px">视频控制器 v1.2.3</div>
+<div style="font-weight:bold;font-size:13px;color:#444;margin-bottom:5px;height:28px;line-height:28px">视频控制器 v1.2.4</div>
 <div style="display:grid;grid-template-columns:52px 1fr;column-gap:6px;row-gap:2px">
 <span style="color:#555">作者</span><span><a href="https://space.bilibili.com/423767625" target="_blank" style="color:#1a73e8">邱宗满</a></span>
 <span style="color:#555">邮箱</span><span>qiuzongman@foxmail.com</span>
