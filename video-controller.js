@@ -2,7 +2,7 @@
 // @name         视频控制器
 // @namespace    video-controller
 // @description  120+KB的极简视频控制器，适配HTML5播放器。支持倍速（0.25x–16x）、音量增强（最高5x）、亮度增强（最高3x）。常规快捷键操作：倍速/快进/音量/逐帧/亮度/画面缩放。此外，支持屏幕全屏/网页全屏/旋转90°/水平翻转/画面拖动/截图/画中画/纯净模式，支持自动记忆网站设置/全局自动设置/色彩模式更改/区间循环播放。
-// @version      1.2.4
+// @version      1.2.5
 // @license      MIT
 // @author       Qiu Zongman
 // @homepageURL  https://gitee.com/qiuzongman/video-controller
@@ -66,6 +66,7 @@
         autoSpeed: 1.0,
         autoVolumeEnabled: false,
         autoVolume: 1.0,
+        loudnessEnabled: true,
         autoBrightness: 1.0,
         autoBrightnessEnabled: false,
         autoPlayEnabled: false,
@@ -78,7 +79,7 @@
         biliProgressEnabled: true,
         favEnabled: false,
         autoNextEnabled: true,
-        autoNextReverse: false,
+        autoNextOrder: 'forward',
         autoNextWebDisabled: false,
     };
 
@@ -107,6 +108,10 @@
             settings = { ...DEFAULT_SETTINGS };
         }
         if (!settings.openSettingsKey) settings.hideMenuEntry = false;
+        if (settings.autoNextReverse !== undefined && !settings.autoNextOrder) {
+            settings.autoNextOrder = settings.autoNextReverse ? 'reverse' : 'forward';
+            delete settings.autoNextReverse;
+        }
     }
 
     function saveSettings() {
@@ -185,6 +190,8 @@
         if (!_toastEl) {
             _toastEl = document.createElement('div');
             _toastEl.style.cssText = [
+                'all: initial;',
+                'box-sizing: border-box;',
                 'font-family: Arial, "Microsoft YaHei", sans-serif;',
                 'max-width: 60%; min-width: 150px; padding: 0 14px;',
                 'height: 40px; color: #fff; line-height: 40px;',
@@ -194,13 +201,19 @@
                 'z-index: 2147483647;',
                 'background: rgba(0,0,0,0.78);',
                 'pointer-events: none;',
-                'transition: opacity 0.3s ease;'
+                'transition: opacity 0.3s ease;',
+                'font-size: 14px;',
+                'white-space: nowrap;'
             ].join('');
             document.body.appendChild(_toastEl);
         }
         _toastEl.textContent = msg;
         _toastEl.style.opacity = '1';
-        _toastEl.style.display = '';
+        _toastEl.style.display = 'block';
+        _toastEl.style.fontSize = '14px';
+        _toastEl.style.lineHeight = '40px';
+        _toastEl.style.color = '#fff';
+        _toastEl.style.textAlign = 'center';
         if (_toastTimer) clearTimeout(_toastTimer);
         _toastTimer = setTimeout(() => {
             _toastEl.style.opacity = '0';
@@ -219,10 +232,13 @@
             var ctx = new AC();
             ctx.resume();
             var source = ctx.createMediaElementSource(video);
+            var analyser = ctx.createAnalyser();
+            analyser.fftSize = 256;
             var gain = ctx.createGain();
-            source.connect(gain);
+            source.connect(analyser);
+            analyser.connect(gain);
             gain.connect(ctx.destination);
-            record = { ctx, source, gain };
+            record = { ctx, source, analyser, gain, loudnessComp: 1, loudnessBuf: [], loudnessTimer: null };
             audioCtxMap.set(video, record);
             return record;
         } catch (e) {
@@ -236,15 +252,16 @@
         if (location.protocol === 'file:') clamped = Math.min(1, clamped);
         var record = audioCtxMap.get(video);
         var actual;
+        var comp = settings.loudnessEnabled && record ? record.loudnessComp : 1;
         if (record) {
             video.volume = 1.0;
-            record.gain.gain.value = clamped;
+            record.gain.gain.value = clamped * comp;
             actual = clamped;
         } else if (clamped > 1.0) {
             record = getAudioBoost(video);
             if (record) {
                 video.volume = 1.0;
-                record.gain.gain.value = clamped;
+                record.gain.gain.value = clamped * comp;
                 actual = clamped;
             } else {
                 actual = Math.min(1, clamped);
@@ -259,7 +276,12 @@
 
     function getVideoVolume(video) {
         var record = audioCtxMap.get(video);
-        if (record) return record.gain.gain.value;
+        if (record) {
+            if (settings.loudnessEnabled && record.loudnessComp > 0) {
+                return record.gain.gain.value / record.loudnessComp;
+            }
+            return record.gain.gain.value;
+        }
         return video.volume;
     }
 
@@ -351,8 +373,13 @@
 
     function changeVolume(video, delta) {
         if (!video) return;
-        var curVol = getVideoVolume(video);
         var rec = audioCtxMap.get(video);
+        var curVol;
+        if (rec && settings.loudnessEnabled && _sessionVolume !== undefined) {
+            curVol = _sessionVolume;
+        } else {
+            curVol = getVideoVolume(video);
+        }
         var baseVol = rec ? curVol * video.volume : curVol;
         var newVol = Math.round(baseVol / settings.volumeStep) * settings.volumeStep + delta;
         newVol = Math.max(0, Math.min(settings.maxVolume, newVol));
@@ -590,6 +617,12 @@
     function onVideoPlay(e) {
         const video = e.target;
         if (!video || video.tagName !== 'VIDEO') return;
+        if (settings.loudnessEnabled) {
+            getAudioBoost(video);
+            startLoudnessAnalysis(video);
+        } else {
+            stopLoudnessAnalysis(video);
+        }
         if (settings.autoSpeedEnabled) {
             var rate = parseFloat(settings.autoSpeed);
             if (!isNaN(rate) && rate >= settings.minSpeed && rate <= settings.maxSpeed) {
@@ -625,6 +658,51 @@
         }
     }
 
+    function startLoudnessAnalysis(video) {
+        var record = audioCtxMap.get(video);
+        if (!record || !record.analyser) return;
+        if (record.loudnessTimer) return;
+        record.loudnessBuf = [];
+        record.loudnessComp = 1;
+        var update = function() {
+            if (!video || video.paused || video.ended) {
+                record.loudnessTimer = null;
+                return;
+            }
+            var data = new Uint8Array(record.analyser.frequencyBinCount);
+            record.analyser.getByteTimeDomainData(data);
+            var sum = 0;
+            for (var i = 0; i < data.length; i++) {
+                sum += Math.abs(data[i] - 128);
+            }
+            var rms = sum / data.length / 128;
+            record.loudnessBuf.push(rms);
+            if (record.loudnessBuf.length > 20) record.loudnessBuf.shift();
+            var avg = 0;
+            for (var i = 0; i < record.loudnessBuf.length; i++) avg += record.loudnessBuf[i];
+            avg /= record.loudnessBuf.length;
+            if (avg > 0.01 && settings.loudnessEnabled) {
+                var targetRms = 0.15;
+                var newComp = targetRms / avg;
+                newComp = Math.max(0.5, Math.min(2, newComp));
+                record.loudnessComp += (newComp - record.loudnessComp) * 0.1;
+                var curVol = getVideoVolume(video);
+                if (curVol >= 0) {
+                    record.gain.gain.value = curVol * record.loudnessComp;
+                }
+            }
+            record.loudnessTimer = requestAnimationFrame(update);
+        };
+        record.loudnessTimer = requestAnimationFrame(update);
+    }
+
+    function stopLoudnessAnalysis(video) {
+        var record = audioCtxMap.get(video);
+        if (!record || !record.loudnessTimer) return;
+        cancelAnimationFrame(record.loudnessTimer);
+        record.loudnessTimer = null;
+    }
+
     function bindVideoEvents(video) {
         if (video._vcEventsBound) return;
         video._vcEventsBound = true;
@@ -632,6 +710,8 @@
         video.addEventListener('volumechange', function() {
             _sessionVolume = getVideoVolume(video);
         });
+        video.addEventListener('pause', function() { stopLoudnessAnalysis(video); });
+        video.addEventListener('ended', function() { stopLoudnessAnalysis(video); });
         if (settings.autoPlayEnabled) {
             video.play().catch(function(){});
         }
@@ -789,7 +869,7 @@
             var div = document.createElement('div');
             div.id = 'vc-next-ui';
             div.style.cssText = 'display:flex;align-items:center;gap:10px;padding:2px 16px;margin:0;line-height:1;font-size:13px;color:var(--text3,#99a2aa)';
-            div.innerHTML = '<span class="vc-nl">自动切集</span><span class="vc-ns" data-key="enabled"></span><span class="vc-nl" style="margin-left:6px">倒序</span><span class="vc-ns" data-key="reverse"></span>';
+            div.innerHTML = '<span class="vc-nl">自动切集</span><span class="vc-ns" data-key="enabled"></span><span class="vc-nl" style="margin-left:6px">顺序</span><span class="vc-ns" data-key="order"></span>';
             ss.parentNode.insertBefore(div, ss);
             buildNextToggles(div);
             return;
@@ -798,7 +878,7 @@
         var div = document.createElement('div');
         div.id = 'vc-next-ui';
         div.style.cssText = 'display:flex;align-items:center;gap:10px;padding:0;margin:0;line-height:1;font-size:13px;color:var(--text3,#99a2aa)';
-        div.innerHTML = '<span class="vc-nl">自动切集</span><span class="vc-ns" data-key="enabled"></span><span class="vc-nl" style="margin-left:6px">倒序</span><span class="vc-ns" data-key="reverse"></span>';
+        div.innerHTML = '<span class="vc-nl">自动切集</span><span class="vc-ns" data-key="enabled"></span><span class="vc-nl" style="margin-left:6px">顺序</span><span class="vc-ns" data-key="order"></span>';
         var ref = container.querySelector('.header-top,.video-sections-head');
         if (ref) { ref.parentNode.insertBefore(div, ref); }
         else { container.insertBefore(div, container.firstChild); }
@@ -808,35 +888,61 @@
     function buildNextToggles(div) {
         div.querySelectorAll('.vc-ns').forEach(function(el) {
             var key = el.getAttribute('data-key');
-            var toggle = document.createElement('span');
-            toggle.className = 'vc-next-switch';
-            toggle.style.cssText = 'display:inline-block;position:relative;width:30px;height:20px;border:1px solid #ccc;outline:none;border-radius:10px;box-sizing:border-box;background:#ccc;cursor:pointer;vertical-align:middle;transition:border-color .2s,background-color .2s';
-            var dot = document.createElement('span');
-            dot.style.cssText = 'position:absolute;top:1px;left:1px;border-radius:100%;width:16px;height:16px;background-color:#fff;transition:all .2s';
-            toggle.appendChild(dot);
-            el.parentNode.replaceChild(toggle, el);
+            if (key === 'enabled') {
+                var toggle = document.createElement('span');
+                toggle.className = 'vc-next-switch';
+                toggle.style.cssText = 'display:inline-block;position:relative;width:30px;height:20px;border:1px solid #ccc;outline:none;border-radius:10px;box-sizing:border-box;background:#ccc;cursor:pointer;vertical-align:middle;transition:border-color .2s,background-color .2s';
+                var dot = document.createElement('span');
+                dot.style.cssText = 'position:absolute;top:1px;left:1px;border-radius:100%;width:16px;height:16px;background-color:#fff;transition:all .2s';
+                toggle.appendChild(dot);
+                el.parentNode.replaceChild(toggle, el);
 
-            function sync() {
-                var on = key === 'enabled' ? (settings.autoNextEnabled && !_webAutoNextDisabled) : settings.autoNextReverse;
-                toggle.style.borderColor = on ? '#00aeec' : '#ccc';
-                toggle.style.background = on ? '#00aeec' : '#ccc';
-                dot.style.left = on ? '11px' : '1px';
-            }
-            sync();
+                function sync() {
+                    var on = settings.autoNextEnabled && !_webAutoNextDisabled;
+                    toggle.style.borderColor = on ? '#00aeec' : '#ccc';
+                    toggle.style.background = on ? '#00aeec' : '#ccc';
+                    dot.style.left = on ? '11px' : '1px';
+                }
+                sync();
 
-            toggle.addEventListener('click', function() {
-                if (key === 'enabled') {
+                toggle.addEventListener('click', function() {
                     _webAutoNextDisabled = !_webAutoNextDisabled;
                     settings.autoNextWebDisabled = _webAutoNextDisabled;
                     saveSettings();
                     setupAutoNext(_webAutoNextDisabled ? 'off' : getNextMode());
-                } else {
-                    settings.autoNextReverse = !settings.autoNextReverse;
-                    saveSettings();
-                    setupAutoNext(getNextMode());
+                    sync();
+                });
+            } else if (key === 'order') {
+                var orderSpan = document.createElement('span');
+                orderSpan.className = 'vc-next-order';
+                orderSpan.style.cssText = 'display:inline-flex;gap:0;border:1px solid #64b5f6;border-radius:4px;overflow:hidden;cursor:pointer;vertical-align:middle';
+                ['正序','倒序','随机'].forEach(function(label, idx) {
+                    var btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.textContent = label;
+                    btn.style.cssText = 'padding:0 10px;line-height:25px;border:none;background:#e3f2fd;color:#1565c0;cursor:pointer;font-size:13px';
+                    btn.addEventListener('click', function() {
+                        var orders = ['forward','reverse','random'];
+                        settings.autoNextOrder = orders[idx];
+                        saveSettings();
+                        setupAutoNext(getNextMode());
+                        syncOrder();
+                    });
+                    orderSpan.appendChild(btn);
+                });
+                el.parentNode.replaceChild(orderSpan, el);
+
+                function syncOrder() {
+                    var orders = ['forward','reverse','random'];
+                    var btns = orderSpan.querySelectorAll('button');
+                    btns.forEach(function(btn, idx) {
+                        var active = settings.autoNextOrder === orders[idx];
+                        btn.style.background = active ? '#90caf9' : '#e3f2fd';
+                        btn.style.color = active ? '#0d47a1' : '#1565c0';
+                    });
                 }
-                sync();
-            });
+                syncOrder();
+            }
         });
     }
 
@@ -850,15 +956,26 @@
                     var target;
                     if (mode === 'reverse') {
                         target = i > 0 ? cards[i - 1] : cards[cards.length - 1];
+                    } else if (mode === 'random') {
+                        var rand = Math.floor(Math.random() * cards.length);
+                        target = cards[rand];
                     } else {
                         target = i < cards.length - 1 ? cards[i + 1] : cards[0];
                     }
-                    // 跨季切换：到边界时找下一季
-                    if ((mode === 'reverse' && i === 0) || (mode !== 'reverse' && i === cards.length - 1)) {
+                    if (mode === 'reverse' && i === 0) {
                         var ss = document.querySelectorAll('.SectionSelector_sectionItem__rFNEH');
                         for (var si = 0; si < ss.length; si++) {
                             if (ss[si].classList.contains('SectionSelector_active__dySMp')) {
-                                var nextSi = mode === 'reverse' ? (si > 0 ? si - 1 : ss.length - 1) : (si < ss.length - 1 ? si + 1 : 0);
+                                var nextSi = si > 0 ? si - 1 : ss.length - 1;
+                                ss[nextSi].click();
+                                return;
+                            }
+                        }
+                    } else if (mode !== 'reverse' && mode !== 'random' && i === cards.length - 1) {
+                        var ss = document.querySelectorAll('.SectionSelector_sectionItem__rFNEH');
+                        for (var si = 0; si < ss.length; si++) {
+                            if (ss[si].classList.contains('SectionSelector_active__dySMp')) {
+                                var nextSi = si < ss.length - 1 ? si + 1 : 0;
                                 ss[nextSi].click();
                                 return;
                             }
@@ -880,6 +997,9 @@
                 var target;
                 if (mode === 'reverse') {
                     target = i > 0 ? cards[i - 1] : cards[cards.length - 1];
+                } else if (mode === 'random') {
+                    var rand = Math.floor(Math.random() * cards.length);
+                    target = cards[rand];
                 } else {
                     target = i < cards.length - 1 ? cards[i + 1] : cards[0];
                 }
@@ -891,7 +1011,8 @@
     }
 
     function getNextMode() {
-        return settings.autoNextEnabled ? (settings.autoNextReverse ? 'reverse' : 'on') : 'off';
+        if (!settings.autoNextEnabled) return 'off';
+        return settings.autoNextOrder || 'forward';
     }
 
     function isBangumi() {
@@ -928,9 +1049,54 @@
         }
     }
 
+    function isEditableElement(el) {
+        if (!el) return false;
+        const tag = el.tagName || '';
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+        if (el.isContentEditable || el.getAttribute('contenteditable') === 'true') return true;
+        let p = el.parentElement;
+        while (p) {
+            if (p.isContentEditable || p.getAttribute('contenteditable') === 'true') return true;
+            if (p.shadowRoot) {
+                p = p.host || p.parentElement;
+                continue;
+            }
+            p = p.parentElement;
+        }
+        return false;
+    }
+
+    function isTypingElement(el) {
+        const active = document.activeElement;
+        if (active) {
+            if (isEditableElement(active)) return true;
+            if (active.shadowRoot) {
+                const shadowActive = active.shadowRoot.activeElement;
+                if (shadowActive && isEditableElement(shadowActive)) return true;
+            }
+        }
+        if (window._vcShadowDomList_) {
+            for (let i = 0; i < window._vcShadowDomList_.length; i++) {
+                const sr = window._vcShadowDomList_[i];
+                try {
+                    if (sr.activeElement && isEditableElement(sr.activeElement)) return true;
+                } catch (_) {}
+            }
+        }
+        try {
+            const sel = window.getSelection();
+            if (sel && sel.anchorNode) {
+                let node = sel.anchorNode;
+                if (node.nodeType === 3) node = node.parentNode;
+                if (isEditableElement(node)) return true;
+            }
+        } catch (_) {}
+        if (el && isEditableElement(el)) return true;
+        return false;
+    }
+
     function onKeyDown(e) {
-        const tag = (e.target && e.target.tagName) || '';
-        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (e.target && e.target.isContentEditable)) {
+        if (isTypingElement(e.target)) {
             return;
         }
         if (e.metaKey) return;
@@ -1003,9 +1169,13 @@
             existing.remove();
             return;
         }
+        const host = document.createElement('div');
+        host.id = 'vc-settings-panel';
+        host.style.cssText = 'all: initial; position: fixed; top: 0; left: 0; width: 0; height: 0; z-index: 2147483647; pointer-events: none;';
+        const shadow = host.attachShadow({ mode: 'open' });
         const panel = document.createElement('div');
-        panel.id = 'vc-settings-panel';
         panel.style.cssText = [
+            'box-sizing: border-box;',
             'position: fixed; top: 50%; left: 50%;',
             'transform: translate(-50%, -50%);',
             'background: #fff; padding: 20px;',
@@ -1013,14 +1183,17 @@
             'z-index: 2147483647; width: 560px;',
             'max-height: 85vh;',
             'display: flex; flex-direction: column;',
-            '--vc-fs: 13px; font-size: 13px; line-height: 1.4;',
+            'font-size: 13px; line-height: 1.4;',
             'font-family: Arial, "Microsoft YaHei", sans-serif;',
+            'color: #333;',
             'pointer-events: auto;'
         ].join('');
         panel.innerHTML = buildSettingsHTML();
-        var host = document.fullscreenElement || document.body;
-        if (host && host.tagName === 'VIDEO') host = host.parentElement;
-        host.appendChild(panel);
+        panel.id = 'vc-settings-panel';
+        shadow.appendChild(panel);
+        var mountHost = document.fullscreenElement || document.body;
+        if (mountHost && mountHost.tagName === 'VIDEO') mountHost = mountHost.parentElement;
+        mountHost.appendChild(host);
         bindSettingsEvents(panel);
     }
 
@@ -1113,6 +1286,10 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
         <span style="font-weight:bold;font-size:13px;color:#444">视频收藏</span><span></span>
         <span style="display:flex;justify-content:flex-end"><span class="vc-dual" id="vc-favEnabled" data-value="${s.favEnabled ? '1' : '0'}" style="display:flex;gap:0;width:100%"><button type="button" style="padding:0;line-height:25px;border:1px solid ${s.favEnabled ? '#64b5f6' : '#90caf9'};border-radius:4px 0 0 4px;background:${s.favEnabled ? '#90caf9' : '#e3f2fd'};color:${s.favEnabled ? '#0d47a1' : '#1565c0'};cursor:pointer;font-size:13px;flex:1">开启</button><button type="button" style="padding:0;line-height:25px;border:1px solid ${s.favEnabled ? '#90caf9' : '#64b5f6'};border-left:none;border-radius:0 4px 4px 0;background:${s.favEnabled ? '#e3f2fd' : '#90caf9'};color:${s.favEnabled ? '#1565c0' : '#0d47a1'};cursor:pointer;font-size:13px;flex:1">关闭</button></span></span>
       </div>
+      <div style="display:grid;grid-template-columns:52px 60px 1fr;gap:4px;align-items:center;margin-bottom:5px;height:28px">
+        <span style="font-weight:bold;font-size:13px;color:#444">标准音量</span><span></span>
+        <span style="display:flex;justify-content:flex-end"><span class="vc-dual" id="vc-loudnessEnabled" data-value="${s.loudnessEnabled ? '1' : '0'}" style="display:flex;gap:0;width:100%"><button type="button" style="padding:0;line-height:25px;border:1px solid ${s.loudnessEnabled ? '#64b5f6' : '#90caf9'};border-radius:4px 0 0 4px;background:${s.loudnessEnabled ? '#90caf9' : '#e3f2fd'};color:${s.loudnessEnabled ? '#0d47a1' : '#1565c0'};cursor:pointer;font-size:13px;flex:1">开启</button><button type="button" style="padding:0;line-height:25px;border:1px solid ${s.loudnessEnabled ? '#90caf9' : '#64b5f6'};border-left:none;border-radius:0 4px 4px 0;background:${s.loudnessEnabled ? '#e3f2fd' : '#90caf9'};color:${s.loudnessEnabled ? '#1565c0' : '#0d47a1'};cursor:pointer;font-size:13px;flex:1">关闭</button></span></span>
+      </div>
       <div style="display:grid;grid-template-columns:52px 60px 1fr;gap:4px;align-items:center;margin-bottom:5px;height:28px;font-size:13px">
         <span style="font-weight:bold;color:#444">色彩模式</span><span></span>
         <select id="vc-preset" style="height:25px;box-sizing:border-box;padding:4px 8px;border:1px solid #64b5f6;border-radius:4px;font-size:13px;background:#90caf9;color:#0d47a1;cursor:pointer;text-align:center;max-width:180px;-webkit-appearance:none;-moz-appearance:none;appearance:none">${(()=>{var p=COLOR_PRESETS; return Object.keys(p).map(function(k){return '<option value="'+k+'" style="background:#e3f2fd;color:#1565c0">'+k+'</option>';}).join('')+'<option value="自定义" style="background:#e3f2fd;color:#999">自定义</option>';})()}</select>
@@ -1175,6 +1352,7 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
     <div class="vc-item"><span class="vc-lbl">自动音量</span><span class="vc-num"><input type="number" id="vc-autoVolume" value="${s.autoVolume}" min="0" max="5" step="0.05"></span><span class="vc-ctl"><span class="vc-dual" id="vc-autoVolumeEnabled" data-color="yellow" data-value="${s.autoVolumeEnabled ? '1' : '0'}" style="display:flex;gap:0;width:100%;max-width:180px"><button type="button" style="padding:0;line-height:25px;border:1px solid ${s.autoVolumeEnabled ? '#ff9800' : '#ffb300'};border-radius:4px 0 0 4px;background:${s.autoVolumeEnabled ? '#ffd54f' : '#fff3cd'};color:${s.autoVolumeEnabled ? '#3e2723' : '#5d4037'};cursor:pointer;font-size:13px;flex:1">开启</button><button type="button" style="padding:0;line-height:25px;border:1px solid ${s.autoVolumeEnabled ? '#ffb300' : '#ff9800'};border-left:none;border-radius:0 4px 4px 0;background:${s.autoVolumeEnabled ? '#fff3cd' : '#ffd54f'};color:${s.autoVolumeEnabled ? '#5d4037' : '#3e2723'};cursor:pointer;font-size:13px;flex:1">关闭</button></span></span></div>
     <div class="vc-item"><span class="vc-lbl">自动亮度</span><span class="vc-num"><input type="number" id="vc-autoBrightness" value="${s.autoBrightness}" min="0" max="3" step="0.05"></span><span class="vc-ctl"><span class="vc-dual" id="vc-autoBrightnessEnabled" data-color="yellow" data-value="${s.autoBrightnessEnabled ? '1' : '0'}" style="display:flex;gap:0;width:100%;max-width:180px"><button type="button" style="padding:0;line-height:25px;border:1px solid ${s.autoBrightnessEnabled ? '#ff9800' : '#ffb300'};border-radius:4px 0 0 4px;background:${s.autoBrightnessEnabled ? '#ffd54f' : '#fff3cd'};color:${s.autoBrightnessEnabled ? '#3e2723' : '#5d4037'};cursor:pointer;font-size:13px;flex:1">开启</button><button type="button" style="padding:0;line-height:25px;border:1px solid ${s.autoBrightnessEnabled ? '#ffb300' : '#ff9800'};border-left:none;border-radius:0 4px 4px 0;background:${s.autoBrightnessEnabled ? '#fff3cd' : '#ffd54f'};color:${s.autoBrightnessEnabled ? '#5d4037' : '#3e2723'};cursor:pointer;font-size:13px;flex:1">关闭</button></span></span></div>
     <div class="vc-item"><span class="vc-lbl">自动播放</span><span class="vc-num"></span><span class="vc-ctl"><span class="vc-dual" id="vc-autoPlayEnabled" data-color="yellow" data-value="${s.autoPlayEnabled ? '1' : '0'}" style="display:flex;gap:0;width:100%;max-width:180px"><button type="button" style="padding:0;line-height:25px;border:1px solid ${s.autoPlayEnabled ? '#ff9800' : '#ffb300'};border-radius:4px 0 0 4px;background:${s.autoPlayEnabled ? '#ffd54f' : '#fff3cd'};color:${s.autoPlayEnabled ? '#3e2723' : '#5d4037'};cursor:pointer;font-size:13px;flex:1">开启</button><button type="button" style="padding:0;line-height:25px;border:1px solid ${s.autoPlayEnabled ? '#ffb300' : '#ff9800'};border-left:none;border-radius:0 4px 4px 0;background:${s.autoPlayEnabled ? '#fff3cd' : '#ffd54f'};color:${s.autoPlayEnabled ? '#5d4037' : '#3e2723'};cursor:pointer;font-size:13px;flex:1">关闭</button></span></span></div>
+
   </div>
   <div class="vc-part">
     <div class="vc-item"><span class="vc-lbl" style="font-weight:bold">站点记忆</span><span class="vc-num"></span><span class="vc-ctl"><span class="vc-dual" id="vc-siteMemoryEnabled" data-value="${s.siteMemoryEnabled ? '1' : '0'}" style="display:flex;gap:0;width:100%;max-width:180px"><button type="button" style="padding:0;line-height:25px;border:1px solid ${s.siteMemoryEnabled ? '#64b5f6' : '#90caf9'};border-radius:4px 0 0 4px;background:${s.siteMemoryEnabled ? '#90caf9' : '#e3f2fd'};color:${s.siteMemoryEnabled ? '#0d47a1' : '#1565c0'};cursor:pointer;font-size:13px;flex:1">开启</button><button type="button" style="padding:0;line-height:25px;border:1px solid ${s.siteMemoryEnabled ? '#90caf9' : '#64b5f6'};border-left:none;border-radius:0 4px 4px 0;background:${s.siteMemoryEnabled ? '#e3f2fd' : '#90caf9'};color:${s.siteMemoryEnabled ? '#1565c0' : '#0d47a1'};cursor:pointer;font-size:13px;flex:1">关闭</button></span></span></div>
@@ -1195,7 +1373,6 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
 <div><a href="https://scriptcat.org/zh-CN/script-show-page/6725" target="_blank" style="color:#1565c0;text-decoration:none">Web+</a></div>
 <div><a href="https://greasyfork.org/zh-CN/scripts/419215-autopager" target="_blank" style="color:#1565c0;text-decoration:none">自动无缝翻页</a></div>
 <div><a href="https://greasyfork.org/zh-CN/scripts/24204-picviewer-ce" target="_blank" style="color:#1565c0;text-decoration:none">Picviewer CE+</a></div>
-<div><a href="https://scriptcat.org/zh-CN/script-show-page/1604" target="_blank" style="color:#1565c0;text-decoration:none">LinkSwift</a></div>
 <div><a href="https://greasyfork.org/zh-CN/scripts/473912-github%E6%90%9C%E7%B4%A2%E5%87%80%E5%8C%96" target="_blank" style="color:#1565c0;text-decoration:none">GitHub搜索净化</a></div>
 <div><a href="https://greasyfork.org/zh-CN/scripts/412245-github-enhancement-high-speed-download" target="_blank" style="color:#1565c0;text-decoration:none">GitHub高速下载</a></div>
 <div style="font-weight:bold;font-size:13px;color:#444;margin:14px 0 6px">🫶 支援我买 Token 继续改进代码</div>
@@ -1208,7 +1385,7 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
   <div class="vc-part">
     <div style="font-weight:bold;font-size:13px;color:#444;margin-bottom:5px;height:28px;line-height:28px">B站</div>
     <div class="vc-item"><span class="vc-lbl">总进度</span><span class="vc-num"></span><span class="vc-ctl"><span class="vc-dual" id="vc-biliProgressEnabled" data-color="yellow" data-value="${s.biliProgressEnabled ? '1' : '0'}" style="display:flex;gap:0;width:100%;max-width:180px"><button type="button" style="padding:0;line-height:25px;border:1px solid ${s.biliProgressEnabled ? '#ff9800' : '#ffb300'};border-radius:4px 0 0 4px;background:${s.biliProgressEnabled ? '#ffd54f' : '#fff3cd'};color:${s.biliProgressEnabled ? '#3e2723' : '#5d4037'};cursor:pointer;font-size:13px;flex:1">开启</button><button type="button" style="padding:0;line-height:25px;border:1px solid ${s.biliProgressEnabled ? '#ffb300' : '#ff9800'};border-left:none;border-radius:0 4px 4px 0;background:${s.biliProgressEnabled ? '#fff3cd' : '#ffd54f'};color:${s.biliProgressEnabled ? '#5d4037' : '#3e2723'};cursor:pointer;font-size:13px;flex:1">关闭</button></span></span></div>
-    <div class="vc-item"><span class="vc-lbl">切集按钮</span><span class="vc-num"></span><span class="vc-ctl"><span id="vc-autoNextEnabled" data-value="${s.autoNextEnabled ? '1' : '0'}" class="vc-dual" style="display:flex;gap:0;width:100%;max-width:180px" data-color="yellow"><button type="button" style="padding:0;line-height:25px;border:1px solid ${s.autoNextEnabled ? '#ff9800' : '#ffb300'};border-radius:4px 0 0 4px;background:${s.autoNextEnabled ? '#ffd54f' : '#fff3cd'};color:${s.autoNextEnabled ? '#3e2723' : '#5d4037'};cursor:pointer;font-size:13px;flex:1">开启</button><button type="button" style="padding:0;line-height:25px;border:1px solid ${s.autoNextEnabled ? '#ffb300' : '#ff9800'};border-left:none;border-radius:0 4px 4px 0;background:${s.autoNextEnabled ? '#fff3cd' : '#ffd54f'};color:${s.autoNextEnabled ? '#5d4037' : '#3e2723'};cursor:pointer;font-size:13px;flex:1">关闭</button></span></span></div>
+    <div class="vc-item"><span class="vc-lbl">自动切集</span><span class="vc-num"></span><span class="vc-ctl"><span id="vc-autoNextEnabled" data-value="${s.autoNextEnabled ? '1' : '0'}" class="vc-dual" style="display:flex;gap:0;width:100%;max-width:180px" data-color="yellow"><button type="button" style="padding:0;line-height:25px;border:1px solid ${s.autoNextEnabled ? '#ff9800' : '#ffb300'};border-radius:4px 0 0 4px;background:${s.autoNextEnabled ? '#ffd54f' : '#fff3cd'};color:${s.autoNextEnabled ? '#3e2723' : '#5d4037'};cursor:pointer;font-size:13px;flex:1">开启</button><button type="button" style="padding:0;line-height:25px;border:1px solid ${s.autoNextEnabled ? '#ffb300' : '#ff9800'};border-left:none;border-radius:0 4px 4px 0;background:${s.autoNextEnabled ? '#fff3cd' : '#ffd54f'};color:${s.autoNextEnabled ? '#5d4037' : '#3e2723'};cursor:pointer;font-size:13px;flex:1">关闭</button></span></span></div>
   </div>
   <div class="vc-part">
   </div>
@@ -1607,6 +1784,7 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
         settings.autoSpeed = Math.max(0.25, Math.min(16, getNum('vc-autoSpeed') || DEFAULT_SETTINGS.autoSpeed));
         settings.autoVolumeEnabled = getBool('vc-autoVolumeEnabled');
         settings.autoVolume = Math.max(0, Math.min(5, getNum('vc-autoVolume') || DEFAULT_SETTINGS.autoVolume));
+        settings.loudnessEnabled = getBool('vc-loudnessEnabled');
         settings.autoBrightnessEnabled = getBool('vc-autoBrightnessEnabled');
         settings.autoBrightness = Math.max(0, Math.min(3, getNum('vc-autoBrightness') || DEFAULT_SETTINGS.autoBrightness));
         settings.autoPlayEnabled = getBool('vc-autoPlayEnabled');
@@ -1646,11 +1824,12 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
 
         _favGroup = document.createElement('div');
         _favGroup.id = 'vc-fav-group';
-        _favGroup.style.cssText = 'position:fixed;left:0;top:calc(25% - 66px);width:36px;height:84px;z-index:999999';
+        _favGroup.style.cssText = 'all: initial; position:fixed;left:0;top:calc(25% - 66px);width:36px;height:84px;z-index:2147483646';
+        const _favGroupShadow = _favGroup.attachShadow({ mode: 'open' });
         var playBtn = document.createElement('div');
         playBtn.id = 'vc-fav-play';
         playBtn.textContent = '▶';
-        playBtn.style.cssText = 'position:absolute;top:0;left:0;width:36px;height:36px;background:#e3f2fd;display:flex;align-items:center;justify-content:center;cursor:pointer;user-select:none;color:#1565c0;font-size:20px;font-weight:1000;line-height:1;opacity:0;pointer-events:none;transition:opacity 0.2s';
+        playBtn.style.cssText = 'position:absolute;top:0;left:0;width:36px;height:36px;background:#e3f2fd;display:flex;align-items:center;justify-content:center;cursor:pointer;user-select:none;color:#1565c0;font-size:20px;font-weight:1000;line-height:1;opacity:0;pointer-events:none;transition:opacity 0.2s;font-family:sans-serif';
         playBtn.style.display = 'flex';
         playBtn.style.alignItems = 'center';
         playBtn.style.justifyContent = 'center';
@@ -1658,12 +1837,12 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
         var plusBtn = document.createElement('div');
         plusBtn.id = 'vc-fav-plus';
         plusBtn.textContent = '＋';
-        plusBtn.style.cssText = 'position:absolute;bottom:0;left:0;width:36px;height:36px;background:#e3f2fd;display:flex;align-items:center;justify-content:center;cursor:pointer;user-select:none;color:#1565c0;font-size:28px;font-weight:1000;line-height:1';
+        plusBtn.style.cssText = 'position:absolute;bottom:0;left:0;width:36px;height:36px;background:#e3f2fd;display:flex;align-items:center;justify-content:center;cursor:pointer;user-select:none;color:#1565c0;font-size:28px;font-weight:1000;line-height:1;font-family:sans-serif';
         plusBtn.style.display = 'flex';
         plusBtn.style.alignItems = 'center';
         plusBtn.style.justifyContent = 'center';
         plusBtn.onclick = toggleFav;
-        _favGroup.append(playBtn, plusBtn);
+        _favGroupShadow.append(playBtn, plusBtn);
 
         // 鼠标移入浮球组显示 ▶，移出隐藏
         _favGroup.onmouseenter = function() {
@@ -1680,8 +1859,11 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
 
         _favPanel = document.createElement('div');
         _favPanel.id = 'vc-fav-panel';
-        _favPanel.style.cssText = 'position:fixed;left:-380px;top:25%;z-index:999998;width:360px;max-height:70vh;background:#e3f2fd;display:flex;flex-direction:column;font:13px/1.5 sans-serif;color:#222;transition:left .3s;overflow:hidden';
-        _favPanel.innerHTML = '<div style="display:flex;align-items:center;gap:8px;padding:4px 16px;border-bottom:1px solid rgba(0,0,0,.06);min-height:28px">'
+        _favPanel.style.cssText = 'all: initial; position:fixed;left:-380px;top:25%;z-index:2147483645;width:360px;max-height:70vh;background:#e3f2fd;display:flex;flex-direction:column;font:13px/1.5 sans-serif;color:#222;transition:left .3s;overflow:hidden;box-sizing:border-box';
+        const _favPanelShadow = _favPanel.attachShadow({ mode: 'open' });
+        const _favPanelInner = document.createElement('div');
+        _favPanelInner.style.cssText = 'width:100%;height:100%;font:13px/1.5 sans-serif;color:#222;background:#e3f2fd;display:flex;flex-direction:column';
+        _favPanelInner.innerHTML = '<div style="display:flex;align-items:center;gap:8px;padding:4px 16px;border-bottom:1px solid rgba(0,0,0,.06);min-height:28px">'
             + '<div id="fav-tbar-norm"></div>'
             + '<div id="fav-tbar-batch" style="display:none">'
             + '<button id="fav-sel" style="height:20px;border:1px solid #1565c0;border-radius:4px;font-size:13px;cursor:pointer;background:transparent;color:#1565c0;padding:0 14px">全选</button>'
@@ -1693,8 +1875,9 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
             + '<button id="fav-close" title="关闭" style="background:none;border:none;cursor:pointer;height:20px;width:20px;display:inline-flex;align-items:center;justify-content:center;font-size:16px;color:#333;padding:0">✕</button>'
             + '</div>'
             + '<div id="fav-list" style="flex:1;overflow-y:auto;padding:4px 8px;min-height:60px;max-height:320px;user-select:none"><div style="text-align:center;color:#999;padding:28px 0;font-size:13px">暂无收藏</div></div>';
+        _favPanelShadow.appendChild(_favPanelInner);
         document.body.appendChild(_favPanel);
-        _favList = _favPanel.querySelector('#fav-list');
+        _favList = _favPanelShadow.querySelector('#fav-list');
 
         function openFav() {
             if (_favState.opened) return;
@@ -1714,20 +1897,20 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
             playBtn.style.pointerEvents = 'none';
             GM_setValue(FAV_PANEL_KEY, '0');
         }
-        _favPanel.querySelector('#fav-close').onclick = closeFav;
-        _favPanel.querySelector('#fav-trash').onclick = function() {
+        _favPanelShadow.querySelector('#fav-close').onclick = closeFav;
+        _favPanelShadow.querySelector('#fav-trash').onclick = function() {
             _favState.batch = true;
             _favState.checked.clear();
             renderFav();
         };
-        _favPanel.querySelector('#fav-sel').onclick = function() {
+        _favPanelShadow.querySelector('#fav-sel').onclick = function() {
             var vids = fl();
             if (_favState.checked.size === vids.length) _favState.checked.clear();
             else vids.forEach(function(_, i) { _favState.checked.add(i); });
             renderFav();
             this.textContent = _favState.checked.size === fl().length ? '取消全选' : '全选';
         };
-        _favPanel.querySelector('#fav-conf').onclick = function() {
+        _favPanelShadow.querySelector('#fav-conf').onclick = function() {
             if (!_favState.checked.size) return;
             var vids = fl();
             Array.from(_favState.checked).sort(function(a, b) { return b - a; }).forEach(function(i) { vids.splice(i, 1); });
@@ -1736,7 +1919,7 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
             _favState.checked.clear();
             renderFav();
         };
-        _favPanel.querySelector('#fav-cancel').onclick = function() {
+        _favPanelShadow.querySelector('#fav-cancel').onclick = function() {
             _favState.batch = false;
             _favState.checked.clear();
             renderFav();
@@ -1753,13 +1936,13 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
 
         function renderFav() {
             var vids = fl(), curUrl = pi().url, isBatch = _favState.batch;
-            var norm = _favPanel.querySelector('#fav-tbar-norm'), bat = _favPanel.querySelector('#fav-tbar-batch');
+            var norm = _favPanelShadow.querySelector('#fav-tbar-norm'), bat = _favPanelShadow.querySelector('#fav-tbar-batch');
             norm.style.display = isBatch ? 'none' : '';
             bat.style.display = isBatch ? '' : 'none';
-            var trash = _favPanel.querySelector('#fav-trash');
+            var trash = _favPanelShadow.querySelector('#fav-trash');
             trash.style.display = isBatch ? 'none' : '';
             var idx2 = vids.findIndex(function(v) { return nu(v.url) === curUrl; });
-            var plus = document.getElementById('vc-fav-plus');
+            var plus = _favGroupShadow.querySelector('#vc-fav-plus');
             if (plus) {
                 plus.textContent = idx2 !== -1 ? '−' : '＋';
                 plus.style.color = idx2 !== -1 ? '#e74c3c' : '#1565c0';
@@ -1789,7 +1972,7 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
                     if (cb) cb.onchange = function() {
                         var i2 = parseInt(el.dataset.i);
                         this.checked ? _favState.checked.add(i2) : _favState.checked.delete(i2);
-                        var sel = _favPanel.querySelector('#fav-sel');
+                        var sel = _favPanelShadow.querySelector('#fav-sel');
                         sel.textContent = _favState.checked.size === vids.length ? '取消全选' : '全选';
                     };
                 } else {
@@ -1808,7 +1991,7 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
                     };
                 }
             });
-            var selBtn = _favPanel.querySelector('#fav-sel');
+            var selBtn = _favPanelShadow.querySelector('#fav-sel');
             selBtn.textContent = _favState.checked.size === vids.length ? '取消全选' : '全选';
             // 滚动到当前页面所在项
             var curIdx = vids.findIndex(function(v) { return nu(v.url) === curUrl; });
@@ -1832,13 +2015,100 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
             var cur = pi().url;
             if (cur !== _favLastUrl) {
                 _favLastUrl = cur;
-                var plus = document.getElementById('vc-fav-plus');
+                var plus = _favGroupShadow.querySelector('#vc-fav-plus');
                 if (!plus) return;
                 var vids = fl(), idx = vids.findIndex(function(v) { return nu(v.url) === cur; });
                 plus.textContent = idx !== -1 ? '−' : '＋';
                 plus.style.color = idx !== -1 ? '#e74c3c' : '#1565c0';
             }
         }, 1000);
+    }
+
+    var _vcActivated = false;
+    var _vcStageObserver = null;
+    var _vcStageTimer = null;
+    var _vcSettled = false;
+    var _vcPending = false;
+
+    function checkVideoNode(node) {
+        if (!node || node.nodeType !== 1) return false;
+        if (node.matches && node.matches(VIDEO_SEL)) return true;
+        if (node.querySelectorAll) {
+            try { if (node.querySelector(VIDEO_SEL)) return true; } catch (e) {}
+        }
+        if (node.shadowRoot) {
+            try { if (node.shadowRoot.querySelector(VIDEO_SEL)) return true; } catch (e) {}
+        }
+        return false;
+    }
+
+    function hasAnyVideo() {
+        try {
+            if (document.querySelector(VIDEO_SEL)) return true;
+        } catch (e) {}
+        if (window._vcShadowDomList_) {
+            for (var i = 0; i < window._vcShadowDomList_.length; i++) {
+                try {
+                    var sr = window._vcShadowDomList_[i];
+                    if (sr && sr.querySelector(VIDEO_SEL)) return true;
+                } catch (e) {}
+            }
+        }
+        return false;
+    }
+
+    function tryActivate() {
+        if (_vcActivated) return;
+        if (!hasAnyVideo()) return;
+        _vcActivated = true;
+        if (_vcStageObserver) { _vcStageObserver.disconnect(); _vcStageObserver = null; }
+        if (_vcStageTimer) { clearTimeout(_vcStageTimer); _vcStageTimer = null; }
+        initFullFeatures();
+    }
+
+    function settleNoVideo() {
+        if (_vcSettled || _vcActivated) return;
+        _vcSettled = true;
+        if (_vcStageObserver) { _vcStageObserver.disconnect(); _vcStageObserver = null; }
+        if (_vcStageTimer) { clearTimeout(_vcStageTimer); _vcStageTimer = null; }
+    }
+
+    function scheduleVideoCheck() {
+        if (_vcPending || _vcActivated) return;
+        _vcPending = true;
+        (window.requestIdleCallback || window.requestAnimationFrame || function (cb) { setTimeout(cb, 0); })(function () {
+            _vcPending = false;
+            if (_vcActivated || _vcSettled) return;
+            if (hasAnyVideo()) { tryActivate(); return; }
+        });
+    }
+
+    function setupStageWatch() {
+        if (_vcStageObserver || _vcSettled) return;
+        try {
+            _vcStageObserver = new MutationObserver(function (mutations) {
+                for (var i = 0; i < mutations.length; i++) {
+                    var added = mutations[i].addedNodes;
+                    for (var j = 0; j < added.length; j++) {
+                        if (checkVideoNode(added[j])) { tryActivate(); return; }
+                    }
+                }
+                scheduleVideoCheck();
+            });
+            _vcStageObserver.observe(document.documentElement, { childList: true, subtree: true });
+        } catch (e) {
+            settleNoVideo();
+            return;
+        }
+        if (document.readyState === 'complete') {
+            _vcStageTimer = setTimeout(settleNoVideo, 3000);
+        } else {
+            window.addEventListener('load', function () {
+                if (_vcActivated || _vcSettled) return;
+                if (hasAnyVideo()) { tryActivate(); return; }
+                _vcStageTimer = setTimeout(settleNoVideo, 3000);
+            }, { once: true });
+        }
     }
 
     function init() {
@@ -1849,6 +2119,22 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
         hijackPlaybackRate();
         hackAttachShadow();
 
+        if (hasAnyVideo()) {
+            tryActivate();
+        } else {
+            setupStageWatch();
+        }
+
+        if (settings.favEnabled) {
+            setTimeout(function() { if (!document.getElementById('vc-fav-group')) initFav(); }, 500);
+        }
+
+        if (!settings.hideMenuEntry && typeof GM_registerMenuCommand === 'function') {
+            GM_registerMenuCommand('视频控制器 设置', openSettings);
+        }
+    }
+
+    function initFullFeatures() {
         document.addEventListener('fullscreenchange', function () {
             var host = document.fullscreenElement || document.body;
             if (_toastEl && _toastEl.parentNode !== host) host.appendChild(_toastEl);
@@ -1856,7 +2142,6 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
             var pnl = document.getElementById('vc-settings-panel');
             if (pnl && pnl.parentNode !== host) {
                 host.appendChild(pnl);
-                pnl.style.zIndex = '2147483647';
             }
         });
 
@@ -1914,6 +2199,10 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
                         }
                     }
                 }
+                if (_panVideo && !document.contains(_panVideo)) {
+                    _panVideo._vcPanning = false;
+                    _panVideo = null;
+                }
             }
         });
         observer.observe(document.documentElement, { childList: true, subtree: true });
@@ -1923,10 +2212,6 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
                 initFav();
             }
         }, 500);
-
-        if (!settings.hideMenuEntry && typeof GM_registerMenuCommand === 'function') {
-            GM_registerMenuCommand('视频控制器 设置', openSettings);
-        }
     }
 
     if (document.readyState === 'loading') {
