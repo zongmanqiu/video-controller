@@ -1,5 +1,25 @@
 # 版本历史
 
+## v1.2.7
+
+* 修复YouTube网页全屏/剧场模式无法切换的问题
+* 修复YouTube无法打开设置面板（支持Trusted Types安全策略）
+* 优化快捷键覆盖机制，确保能优先于网站原生快捷键
+* 新增提示消息9宫格位置选择（左上/中上/右上/左中/中中/右中/左下/中下/右下）
+* 修复提示位置设置无法保存的问题（Shadow DOM查询修复）
+* 删除说明页中的“开发工具”行和全部“推荐脚本”链接
+* 优化设置面板字号统一（全部13px）
+* 删除工具页“进入设置”上方多余空行
+* 优化“提示位置”标签样式（去掉加粗）
+* 修复工具页内容溢出导致的垂直滚动条
+* 重写YouTube网页全屏（采用wrapper方案，参考3.txt）：播放器容器position:fixed铺满视口，父元素用position:relative提升z-index，不破坏布局
+* 新增YouTube网页全屏时隐藏页面UI元素（masthead、secondary、below、comments、panels等）
+* 新增YouTube网页全屏时重置布局元素的contain/transform/filter属性
+* 新增YouTube网页全屏时#player-theater-container和#full-bleed-container的position:fixed覆盖
+* 修复从屏幕全屏进入网页全屏的问题（先退出原生全屏再自动进入网页全屏）
+* 新增YouTube网页全屏视口尺寸同步（visualViewport resize监听 + CSS变量）
+* 修复YouTube空格键暂停双击问题（同时拦截keydown和keyup事件）
+
 ## v1.2.6
 
 * 修复YouTube网页全屏/剧场模式无法切换的问题
