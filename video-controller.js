@@ -2,7 +2,7 @@
 // @name         视频控制器
 // @namespace    video-controller
 // @description  120+KB的极简视频控制器，适配HTML5播放器。支持倍速（0.25x–16x）、音量增强（最高5x）、亮度增强（最高3x）。常规快捷键操作：倍速/快进/音量/逐帧/亮度/画面缩放。此外，支持屏幕全屏/网页全屏/旋转90°/水平翻转/画面拖动/截图/画中画/纯净模式，支持自动记忆网站设置/全局自动设置/色彩模式更改/区间循环播放。
-// @version      1.2.5
+// @version      1.2.6
 // @license      MIT
 // @author       Qiu Zongman
 // @homepageURL  https://gitee.com/qiuzongman/video-controller
@@ -23,6 +23,47 @@
 
     // 仅顶层页面运行，避免 iframe 内重复执行
     if (window.top !== window.self) return;
+
+    var _initReady = false;
+    var _allShortcutKeys = null;
+    function _collectShortcutKeys() {
+        if (_allShortcutKeys) return _allShortcutKeys;
+        _allShortcutKeys = [
+            settings.togglePlay, settings.speedUp, settings.speedDown,
+            settings.forward, settings.backward, settings.frameForward, settings.frameBackward,
+            settings.volumeUp, settings.volumeDown, settings.brightnessUp, settings.brightnessDown,
+            settings.fullscreen, settings.screenshot, settings.rotateKey, settings.flipKey,
+            settings.screenFullKey, settings.pipKey, settings.cleanKey,
+            settings.zoomUpKey, settings.zoomDownKey, settings.panKey,
+            settings.openSettingsKey,
+            settings.quickSpeed1Key, settings.quickSpeed2Key, settings.quickSpeed3Key, settings.quickSpeed4Key
+        ].filter(function(k) { return k && k !== ''; });
+        return _allShortcutKeys;
+    }
+    function _earlyKeyHandler(e) {
+        if (e.metaKey || e.repeat) return;
+        var combo = '';
+        if (e.ctrlKey) combo += 'Ctrl+';
+        if (e.altKey) combo += 'Alt+';
+        combo += e.key;
+        if (!_initReady) {
+            var keys = _collectShortcutKeys();
+            for (var i = 0; i < keys.length; i++) {
+                if (combo === keys[i]) {
+                    e.preventDefault();
+                    e.stopImmediatePropagation();
+                    return;
+                }
+            }
+            return;
+        }
+        if (settings.openSettingsKey && combo === settings.openSettingsKey) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            openSettings();
+        }
+    }
+    window.addEventListener('keydown', _earlyKeyHandler, true);
 
     const DEFAULT_SETTINGS = {
         togglePlay: ' ',
@@ -73,6 +114,7 @@
         siteMemoryEnabled: true,
         noMemorySites: '',
         toastDuration: 3000,
+        toastPosition: 'center-center',
         lastTab: 0,
         hideMenuEntry: false,
         openSettingsKey: '',
@@ -193,21 +235,36 @@
                 'all: initial;',
                 'box-sizing: border-box;',
                 'font-family: Arial, "Microsoft YaHei", sans-serif;',
-                'max-width: 60%; min-width: 150px; padding: 0 14px;',
+                'min-width: 100px; padding: 0 14px;',
                 'height: 40px; color: #fff; line-height: 40px;',
                 'text-align: center; border-radius: 8px;',
-                'position: fixed; top: 50%; left: 50%;',
-                'transform: translate(-50%, -50%);',
+                'position: fixed;',
                 'z-index: 2147483647;',
                 'background: rgba(0,0,0,0.78);',
                 'pointer-events: none;',
                 'transition: opacity 0.3s ease;',
                 'font-size: 14px;',
-                'white-space: nowrap;'
+                'white-space: nowrap;',
+                'overflow: hidden;',
+                'text-overflow: ellipsis;'
             ].join('');
             document.body.appendChild(_toastEl);
         }
         _toastEl.textContent = msg;
+        var pos = settings.toastPosition || 'center-center';
+        var margin = 20;
+        var posStyles = {
+            'top-left':     'top:' + margin + 'px;left:' + margin + 'px;max-width:calc(100vw - ' + (margin*2) + 'px);transform:none;',
+            'top-center':   'top:' + margin + 'px;left:50%;transform:translateX(-50%);max-width:calc(100vw - ' + (margin*2) + 'px);',
+            'top-right':    'top:' + margin + 'px;right:' + margin + 'px;left:auto;max-width:calc(100vw - ' + (margin*2) + 'px);transform:none;',
+            'center-left':  'top:50%;left:' + margin + 'px;transform:translateY(-50%);max-width:calc(100vw - ' + (margin*2) + 'px);',
+            'center-center':'top:50%;left:50%;transform:translate(-50%,-50%);max-width:calc(100vw - ' + (margin*2) + 'px);',
+            'center-right': 'top:50%;right:' + margin + 'px;left:auto;transform:translateY(-50%);max-width:calc(100vw - ' + (margin*2) + 'px);',
+            'bottom-left':  'bottom:' + margin + 'px;left:' + margin + 'px;max-width:calc(100vw - ' + (margin*2) + 'px);transform:none;',
+            'bottom-center':'bottom:' + margin + 'px;left:50%;transform:translateX(-50%);max-width:calc(100vw - ' + (margin*2) + 'px);',
+            'bottom-right': 'bottom:' + margin + 'px;right:' + margin + 'px;left:auto;max-width:calc(100vw - ' + (margin*2) + 'px);transform:none;'
+        };
+        _toastEl.style.cssText = _toastEl.style.cssText.replace(/top:[^;]*;|bottom:[^;]*;|left:[^;]*;|right:[^;]*;|transform:[^;]*;|max-width:[^;]*;/g, '') + (posStyles[pos] || posStyles['center-center']);
         _toastEl.style.opacity = '1';
         _toastEl.style.display = 'block';
         _toastEl.style.fontSize = '14px';
@@ -450,7 +507,7 @@
     }
 
     function toggleScreenFull(video) {
-        var btn = document.querySelector('.bpx-player-ctrl-web,.dplayer-full-icon[data-name="web"],.vjs-remaining-time,.plyr__control[data-plyr="fullscreen"][data-size="small"],[aria-label="网页全屏"],[title="网页全屏"]');
+        var btn = document.querySelector('.bpx-player-ctrl-web,.dplayer-full-icon[data-name="web"],.vjs-remaining-time,.plyr__control[data-plyr="fullscreen"][data-size="small"],[aria-label="网页全屏"],[title="网页全屏"],.ytp-size-button,[aria-label="Theater mode"],[aria-label="剧场模式"]');
         if (btn) { btn.click(); return; }
         if (video._vcSFParent) {
             var wrap = video._vcSFParent;
@@ -1068,21 +1125,7 @@
 
     function isTypingElement(el) {
         const active = document.activeElement;
-        if (active) {
-            if (isEditableElement(active)) return true;
-            if (active.shadowRoot) {
-                const shadowActive = active.shadowRoot.activeElement;
-                if (shadowActive && isEditableElement(shadowActive)) return true;
-            }
-        }
-        if (window._vcShadowDomList_) {
-            for (let i = 0; i < window._vcShadowDomList_.length; i++) {
-                const sr = window._vcShadowDomList_[i];
-                try {
-                    if (sr.activeElement && isEditableElement(sr.activeElement)) return true;
-                } catch (_) {}
-            }
-        }
+        if (active && isEditableElement(active)) return true;
         try {
             const sel = window.getSelection();
             if (sel && sel.anchorNode) {
@@ -1109,7 +1152,7 @@
         combo += e.key;
         if (settings.openSettingsKey && combo === settings.openSettingsKey) {
             e.preventDefault();
-            e.stopPropagation();
+            e.stopImmediatePropagation();
             openSettings();
             return;
         }
@@ -1159,7 +1202,7 @@
         }
         if (handled) {
             e.preventDefault();
-            e.stopPropagation();
+            e.stopImmediatePropagation();
         }
     }
 
@@ -1169,11 +1212,8 @@
             existing.remove();
             return;
         }
-        const host = document.createElement('div');
-        host.id = 'vc-settings-panel';
-        host.style.cssText = 'all: initial; position: fixed; top: 0; left: 0; width: 0; height: 0; z-index: 2147483647; pointer-events: none;';
-        const shadow = host.attachShadow({ mode: 'open' });
         const panel = document.createElement('div');
+        panel.id = 'vc-settings-panel';
         panel.style.cssText = [
             'box-sizing: border-box;',
             'position: fixed; top: 50%; left: 50%;',
@@ -1185,15 +1225,20 @@
             'display: flex; flex-direction: column;',
             'font-size: 13px; line-height: 1.4;',
             'font-family: Arial, "Microsoft YaHei", sans-serif;',
-            'color: #333;',
-            'pointer-events: auto;'
+            'color: #333;'
         ].join('');
-        panel.innerHTML = buildSettingsHTML();
-        panel.id = 'vc-settings-panel';
-        shadow.appendChild(panel);
-        var mountHost = document.fullscreenElement || document.body;
-        if (mountHost && mountHost.tagName === 'VIDEO') mountHost = mountHost.parentElement;
-        mountHost.appendChild(host);
+        var html = buildSettingsHTML();
+        if (typeof trustedTypes !== 'undefined' && trustedTypes.createPolicy) {
+            try {
+                var policy = trustedTypes.createPolicy('vc-settings#1', { createHTML: function(s) { return s; } });
+                panel.innerHTML = policy.createHTML(html);
+            } catch(e) {
+                panel.innerHTML = html;
+            }
+        } else {
+            panel.innerHTML = html;
+        }
+        document.body.appendChild(panel);
         bindSettingsEvents(panel);
     }
 
@@ -1277,9 +1322,22 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
       <div class="vc-item"><span class="vc-lbl">截图</span><span class="vc-num"></span><span class="vc-ctl"><input type="text" id="vc-screenshot" class="vc-key-input" value="${esc(displayKey(s.screenshot))}" readonly placeholder="点击后按键"></span></div>
       <div class="vc-item"><span class="vc-lbl">画中画</span><span class="vc-num"></span><span class="vc-ctl"><input type="text" id="vc-pipKey" class="vc-key-input" value="${esc(displayKey(s.pipKey))}" readonly placeholder="点击后按键"></span></div>
       <div class="vc-item"><span class="vc-lbl">纯净模式</span><span class="vc-num"></span><span class="vc-ctl"><input type="text" id="vc-cleanKey" class="vc-key-input" value="${esc(displayKey(s.cleanKey))}" readonly placeholder="点击后按键"></span></div>
-      <div class="vc-item"><span class="vc-lbl">&nbsp;</span><span class="vc-num"></span><span class="vc-ctl"></span></div>
       <div class="vc-item"><span class="vc-lbl">进入设置</span><span class="vc-num"></span><span class="vc-ctl"><input type="text" id="vc-openSettingsKey" class="vc-key-input" value="${esc(displayKey(s.openSettingsKey))}" readonly placeholder="点击后按键"></span></div>
-      <div class="vc-item" style="margin-bottom:0"><span class="vc-lbl">提示时长</span><span class="vc-num" style="font-size:11px;color:#999">(0=关闭)</span><span class="vc-ctl"><input type="number" id="vc-toastDuration" value="${s.toastDuration}" min="0" max="30000" step="500"></span></div>
+      <div class="vc-item"><span class="vc-lbl">提示时长</span><span class="vc-num" style="font-size:11px;color:#999">(0=关闭)</span><span class="vc-ctl"><input type="number" id="vc-toastDuration" value="${s.toastDuration}" min="0" max="30000" step="500"></span></div>
+      <div style="display:grid;grid-template-columns:52px 60px 1fr;gap:4px;align-items:center;margin-bottom:5px;height:28px;font-size:13px">
+        <span style="font-weight:bold;color:#444">提示位置</span><span></span>
+        <select id="vc-toastPosition" style="height:25px;box-sizing:border-box;padding:4px 8px;border:1px solid #64b5f6;border-radius:4px;font-size:13px;background:#90caf9;color:#0d47a1;cursor:pointer;text-align:center;max-width:180px;-webkit-appearance:none;-moz-appearance:none;appearance:none">
+          <option value="top-left" style="background:#e3f2fd;color:#1565c0"${s.toastPosition==='top-left'?' selected':''}>左上</option>
+          <option value="top-center" style="background:#e3f2fd;color:#1565c0"${s.toastPosition==='top-center'?' selected':''}>中上</option>
+          <option value="top-right" style="background:#e3f2fd;color:#1565c0"${s.toastPosition==='top-right'?' selected':''}>右上</option>
+          <option value="center-left" style="background:#e3f2fd;color:#1565c0"${s.toastPosition==='center-left'?' selected':''}>左中</option>
+          <option value="center-center" style="background:#e3f2fd;color:#1565c0"${s.toastPosition==='center-center'?' selected':''}>中中</option>
+          <option value="center-right" style="background:#e3f2fd;color:#1565c0"${s.toastPosition==='center-right'?' selected':''}>右中</option>
+          <option value="bottom-left" style="background:#e3f2fd;color:#1565c0"${s.toastPosition==='bottom-left'?' selected':''}>左下</option>
+          <option value="bottom-center" style="background:#e3f2fd;color:#1565c0"${s.toastPosition==='bottom-center'?' selected':''}>中下</option>
+          <option value="bottom-right" style="background:#e3f2fd;color:#1565c0"${s.toastPosition==='bottom-right'?' selected':''}>右下</option>
+        </select>
+      </div>
     </div>
     <div class="vc-part">
       <div style="display:grid;grid-template-columns:52px 60px 1fr;gap:4px;align-items:center;margin-bottom:5px;height:28px">
@@ -1361,20 +1419,13 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
   </div>
 </div></div>
 <div id="vc-page4" style="display:none">
-<div style="font-weight:bold;font-size:13px;color:#444;margin-bottom:5px;height:28px;line-height:28px">视频控制器 v1.2.4</div>
+<div style="font-weight:bold;font-size:13px;color:#444;margin-bottom:5px;height:28px;line-height:28px">视频控制器 v1.2.6</div>
 <div style="display:grid;grid-template-columns:52px 1fr;column-gap:6px;row-gap:2px">
 <span style="color:#555">作者</span><span><a href="https://space.bilibili.com/423767625" target="_blank" style="color:#1a73e8">邱宗满</a></span>
 <span style="color:#555">邮箱</span><span>qiuzongman@foxmail.com</span>
 <span style="color:#555">许可证</span><span>MIT</span>
 <span style="color:#555">项目地址</span><span><a href="https://gitee.com/qiuzongman/video-controller" target="_blank" style="color:#1a73e8">Gitee</a></span>
-<span style="color:#555">开发工具</span><span><a href="https://reasonix.io/" target="_blank" style="color:#1a73e8">Reasonix</a> + <a href="https://www.deepseek.com/" target="_blank" style="color:#1a73e8">Deepseek</a></span>
 </div>
-<div style="font-weight:bold;font-size:13px;color:#444;margin:14px 0 6px">推荐脚本</div>
-<div><a href="https://scriptcat.org/zh-CN/script-show-page/6725" target="_blank" style="color:#1565c0;text-decoration:none">Web+</a></div>
-<div><a href="https://greasyfork.org/zh-CN/scripts/419215-autopager" target="_blank" style="color:#1565c0;text-decoration:none">自动无缝翻页</a></div>
-<div><a href="https://greasyfork.org/zh-CN/scripts/24204-picviewer-ce" target="_blank" style="color:#1565c0;text-decoration:none">Picviewer CE+</a></div>
-<div><a href="https://greasyfork.org/zh-CN/scripts/473912-github%E6%90%9C%E7%B4%A2%E5%87%80%E5%8C%96" target="_blank" style="color:#1565c0;text-decoration:none">GitHub搜索净化</a></div>
-<div><a href="https://greasyfork.org/zh-CN/scripts/412245-github-enhancement-high-speed-download" target="_blank" style="color:#1565c0;text-decoration:none">GitHub高速下载</a></div>
 <div style="font-weight:bold;font-size:13px;color:#444;margin:14px 0 6px">🫶 支援我买 Token 继续改进代码</div>
 <div style="margin-bottom:4px;font-size:13px;font-weight:bold;color:#555">微信</div>
 <img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0NTAiIGhlaWdodD0iNDUwIiBzaGFwZS1yZW5kZXJpbmc9ImNyaXNwRWRnZXMiIHZpZXdCb3g9IjAgMCA0NTAgNDUwIj4KICA8cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjZmZmIi8+CiAgPHBhdGggZD0iTTAgMGg3MHYxMEgwem04MCAwaDEwdjEwSDgwem0zMCAwaDQwdjEwaC00MHptNTAgMGgyMHYxMGgtMjB6bTQwIDBoMTB2MjBoLTEwem0zMCAwaDIwdjIwaC0yMHptMzAgMGgyMHYxMGgtMjB6bTQwIDBoNDB2MTBoLTQwem02MCAwaDEwdjEwaC0xMHptMjAgMGg3MHYxMGgtNzB6TTAgMTBoMTB2NjBIMHptNjAgMGgxMHY2MEg2MHptNDAgMGg0MHYxMGgtNDB6bTUwIDBoMTB2MTBoLTEwem0yMCAwaDEwdjEwaC0xMHptNDAgMGgyMHYxMGgtMjB6bTUwIDBoMTB2NDBoLTEwem05MCAwaDEwdjQwaC0xMHptMzAgMGgxMHY2MGgtMTB6bTYwIDBoMTB2NjBoLTEwek0yMCAyMGgzMHYzMEgyMHptODAgMGgxMHYxMGgtMTB6bTMwIDBoMTB2MjBoLTEwem01MCAwaDEwdjIwaC0xMHptMzAgMGgxMHYxMGgtMTB6bTMwIDBoMjB2MTBoLTIwem01MCAwaDIwdjEwaC0yMHptMTEwIDBoMzB2MzBoLTMwek05MCAzMGgxMHYzMEg5MHptMzAgMGgxMHYyMGgtMTB6bTMwIDBoMTB2MzBoLTEwem0yMCAwaDEwdjIwaC0xMHptNjAgMGgxMHYyMGgtMTB6bTQwIDBoMjB2MTBoLTIwem00MCAwaDMwdjEwaC0zMHptNTAgMGgxMHYyMGgtMTB6TTgwIDQwaDEwdjMwSDgwem02MCAwaDEwdjMwaC0xMHptMjAgMGgxMHYxMGgtMTB6bTQwIDBoMzB2MTBoLTMwem00MCAwaDIwdjEwaC0yMHptNDAgMGgxMHYxMGgtMTB6bTQwIDBoMzB2MTBoLTMwek0xODAgNTBoMzB2MTBoLTMwem02MCAwaDEwdjgwaC0xMHptMzAgMGgxMHYxMGgtMTB6bTMwIDBoNDB2MTBoLTQwek0xMCA2MGg1MHYxMEgxMHptOTAgMGgxMHYyMGgtMTB6bTIwIDBoMTB2NTBoLTEwem00MCAwaDEwdjMwaC0xMHptMjAgMGgxMHYxMGgtMTB6bTIwIDBoMTB2MzBoLTEwem0yMCAwaDEwdjEwaC0xMHptNDAgMGgxMHYxMGgtMTB6bTIwIDBoMTB2MjBoLTEwem0yMCAwaDEwdjMwaC0xMHptMjAgMGgxMHYzMGgtMTB6bTIwIDBoMTB2MTBoLTEwem0yMCAwaDEwdjYwaC0xMHptMzAgMGg1MHYxMGgtNTB6TTkwIDcwaDEwdjEwSDkwem00MCAwaDEwdjEwaC0xMHptNjAgMGgxMHY3MGgtMTB6bTYwIDBoMTB2NjBoLTEwem00MCAwaDEwdjEwaC0xMHptNjAgMGgxMHYyMGgtMTB6TTEwIDgwaDcwdjEwSDEwem0xMzAgMGgyMHYxMGgtMjB6bTMwIDBoMjB2MTBoLTIwem00MCAwaDMwdjEwaC0zMHptNTAgMGgyMHYxMGgtMjB6bTEzMCAwaDIwdjEwaC0yMHptNTAgMGgxMHYyMGgtMTB6TTEwIDkwaDIwdjIwSDEwem00MCAwaDEwdjIwSDUwem0yMCAwaDEwdjEwSDcwem00MCAwaDEwdjcwaC0xMHptNDAgMGgxMHYyMGgtMTB6bTYwIDBoMjB2MTBoLTIwem03MCAwaDEwdjEwaC0xMHptMzAgMGgxMHYyMGgtMTB6bTIwIDBoMTB2MzBoLTEwem01MCAwaDEwdjEwaC0xMHptMjAgMGg0MHYxMGgtNDB6TTAgMTAwaDEwdjEwSDB6bTMwIDBoMTB2NzBIMzB6bTMwIDBoMTB2MTBINjB6bTIwIDBoMjB2MjBIODB6bTUwIDBoMjB2MTBoLTIwem0zMCAwaDIwdjEwaC0yMHptNDAgMGgxMHYyMGgtMTB6bTIwIDBoMTB2NDBoLTEwem00MCAwaDIwdjEwaC0yMHptMzAgMGgyMHYyMGgtMjB6bTUwIDBoMjB2MTBoLTIwem03MCAwaDEwdjEwaC0xMHptMjAgMGgxMHYxMGgtMTB6TTEwIDExMGgxMHYxMEgxMHptMzAgMGgxMHYzMEg0MHptNjAgMGgxMHYyMGgtMTB6bTMwIDBoMTB2MTBoLTEwem00MCAwaDEwdjE5MGgtMTB6bTYwIDBoMTB2MzBoLTEwem05MCAwaDEwdjEwaC0xMHptMzAgMGgxMHYxMGgtMTB6bTIwIDBoMTB2MTBoLTEwem0yMCAwaDIwdjEwaC0yMHptMzAgMGgxMHYzMGgtMTB6bTIwIDBoMTB2MTBoLTEwek0wIDEyMGgxMHYzMEgwem0yMCAwaDEwdjIwSDIwem00MCAwaDIwdjEwSDYwem05MCAwaDEwdjE4MGgtMTB6bTYwIDBoMTB2MjBoLTEwem04MCAwaDEwdjEwaC0xMHptOTAgMGgxMHYyMGgtMTB6bTMwIDBoMTB2MjBoLTEwem0yMCAwaDEwdjEwaC0xMHpNNzAgMTMwaDEwdjEwSDcwem0yMCAwaDEwdjEwSDkwem03MCAwaDEwdjEwaC0xMHptMjAgMGgxMHYxOTBoLTEwem0yMCAwaDEwdjEwaC0xMHptNjAgMGgzMHYxMGgtMzB6bTQwIDBoMTB2NDBoLTEwem0yMCAwaDIwdjEwaC0yMHptMzAgMGgyMHYxMGgtMjB6bTUwIDBoMTB2MTBoLTEwek0xMCAxNDBoMTB2MTBIMTB6bTUwIDBoMTB2MTBINjB6bTIwIDBoMTB2MTBIODB6bTIwIDBoMTB2MjBoLTEwem0yMCAwaDEwdjIwaC0xMHptMTQwIDBoMTB2MTcwaC0xMHptMzAgMGgxMHYxOTBoLTEwem0yMCAwaDEwdjEwaC0xMHptNDAgMGgxMHYyMGgtMTB6bTkwIDBoMTB2MTBoLTEwek0yMCAxNTBoMTB2MjBIMjB6bTIwIDBoMjB2MTBINDB6bTEyMCAwaDEwdjE1MGgtMTB6bTMwIDBoNzB2MTUwaC03MHptODAgMGgyMHYxNTBoLTIwem02MCAwaDEwdjIwaC0xMHptMzAgMGgyMHYxMGgtMjB6bTMwIDBoMjB2MTBoLTIwem0zMCAwaDEwdjEwaC0xMHpNMCAxNjBoMjB2MTBIMHptNTAgMGgyMHYxMEg1MHptOTAgMGgxMHYxMGgtMTB6bTE4MCAwaDEwdjEwaC0xMHptMjAgMGgxMHYzMGgtMTB6bTMwIDBoMTB2MzBoLTEwem0yMCAwaDEwdjIwaC0xMHptNDAgMGgxMHYxMGgtMTB6TTAgMTcwaDEwdjEwSDB6bTgwIDBoMTB2ODBIODB6bTMzMCAwaDIwdjEwaC0yMHpNMTAgMTgwaDIwdjIwSDEwem00MCAwaDIwdjEwSDUwem00MCAwaDEwdjEwSDkwem01MCAwaDEwdjEwaC0xMHptMTcwIDBoMTB2MzBoLTEwem00MCAwaDEwdjEwaC0xMHptMzAgMGgxMHYxMGgtMTB6bTUwIDBoMTB2MTBoLTEwek0zMCAxOTBoMTB2MTBIMzB6bTIwIDBoMTB2MjBINTB6bTYwIDBoMTB2MjBoLTEwem0yMCAwaDEwdjEwaC0xMHptMTcwIDBoMTB2NTBoLTEwem02MCAwaDEwdjYwaC0xMHptMzAgMGgyMHYyMGgtMjB6bTUwIDBoMTB2MjBoLTEwek0wIDIwMGgyMHYyMEgwem00MCAwaDEwdjUwSDQwem0yMCAwaDIwdjEwSDYwem02MCAwaDEwdjMwaC0xMHptMjAwIDBoMzB2MTBoLTMwem01MCAwaDIwdjEwaC0yMHpNMjAgMjEwaDEwdjIwSDIwem0xMTAgMGgxMHYxMGgtMTB6bTE5MCAwaDIwdjEwaC0yMHptODAgMGg0MHYxMGgtNDB6TTYwIDIyMGgxMHYxMEg2MHptMzAgMGgxMHY0MEg5MHptMjQwIDBoMzB2MTBoLTMwem01MCAwaDEwdjEwaC0xMHptMjAgMGgxMHYzMGgtMTB6bTIwIDBoMTB2MTBoLTEwek0wIDIzMGgxMHYzMEgwem0xMTAgMGgxMHYxMGgtMTB6bTMwIDBoMTB2MTBoLTEwem0xODAgMGgxMHYxMGgtMTB6bTMwIDBoMTB2MTBoLTEwem05MCAwaDEwdjEwaC0xMHpNMTAgMjQwaDIwdjEwSDEwem00MCAwaDMwdjEwSDUwem01MCAwaDEwdjIwaC0xMHptMjAgMGgxMHYyMGgtMTB6bTE5MCAwaDEwdjEwaC0xMHptMjAgMGgyMHYxMGgtMjB6bTQwIDBoMzB2MTBoLTMwem02MCAwaDEwdjQwaC0xMHpNMjAgMjUwaDEwdjEwSDIwem0zMCAwaDEwdjMwSDUwem02MCAwaDEwdjEwaC0xMHptMzAgMGgxMHYyMGgtMTB6bTE2MCAwaDEwdjEwaC0xMHptMjAgMGgxMHYxMGgtMTB6bTMwIDBoMTB2NDBoLTEwem0yMCAwaDIwdjEwaC0yMHptNDAgMGgyMHYzMGgtMjB6bTMwIDBoMTB2MTBoLTEwek00MCAyNjBoMTB2MzBINDB6bTIwIDBoMTB2MTBINjB6bTIwIDBoMTB2MTBIODB6bTUwIDBoMTB2NDBoLTEwem0xODAgMGgxMHYyMGgtMTB6bTMwIDBoMTB2MTBoLTEwem00MCAwaDEwdjEwaC0xMHpNMTAgMjcwaDMwdjEwSDEwem02MCAwaDEwdjEwSDcwem0yMCAwaDEwdjIwSDkwem0yMCAwaDIwdjEwaC0yMHptMjUwIDBoMjB2MjBoLTIwem04MCAwaDEwdjEwaC0xMHpNMTAgMjgwaDIwdjEwSDEwem01MCAwaDEwdjEwSDYwem00MCAwaDEwdjMwaC0xMHptMjAgMGgxMHYxMGgtMTB6bTIxMCAwaDEwdjEwaC0xMHptNjAgMGgxMHYzMGgtMTB6bTIwIDBoMTB2MjBoLTEwek0yMCAyOTBoMTB2MTBIMjB6bTUwIDBoMjB2MTBINzB6bTcwIDBoMTB2MzBoLTEwem0xNzAgMGgxMHYxMGgtMTB6bTMwIDBoMTB2MjBoLTEwem0zMCAwaDEwdjEwaC0xMHptMzAgMGgxMHYxMGgtMTB6bTIwIDBoMTB2MTBoLTEwek0xMCAzMDBoMTB2MTBIMTB6bTMwIDBoMzB2MTBINDB6bTQwIDBoMTB2MjBIODB6bTMwIDBoMjB2MTBoLTIwem0xMjAgMGgzMHYxMGgtMzB6bTQwIDBoMTB2NDBoLTEwem0zMCAwaDEwdjIwaC0xMHptMzAgMGgxMHYxMGgtMTB6bTEwMCAwaDEwdjEwaC0xMHpNMCAzMTBoMTB2MzBIMHptMjAgMGgxMHYxMEgyMHptMjAgMGgyMHYxMEg0MHptNTAgMGgxMHYxMEg5MHptMzAgMGgyMHYxMGgtMjB6bTQwIDBoMjB2MjBoLTIwem0zMCAwaDIwdjEwaC0yMHptOTAgMGgxMHYxMGgtMTB6bTMwIDBoMjB2MTBoLTIwem00MCAwaDEwdjEwaC0xMHptMjAgMGgyMHYxMGgtMjB6bTQwIDBoMjB2MTBoLTIwek0xMCAzMjBoMTB2MjBIMTB6bTIwIDBoMTB2MTBIMzB6bTMwIDBoMjB2MTBINjB6bTE0MCAwaDIwdjMwaC0yMHptNjAgMGgxMHYzMGgtMTB6bTgwIDBoMTB2MTBoLTEwem0yMCAwaDEwdjEwaC0xMHptNjAgMGgyMHYxMGgtMjB6TTQwIDMzMGgyMHYxMEg0MHptNDAgMGg0MHYxMEg4MHptNjAgMGgxMHY3MGgtMTB6bTMwIDBoMTB2MTBoLTEwem01MCAwaDIwdjEwaC0yMHptNjAgMGgxMHYxMGgtMTB6bTIwIDBoMTB2MTBoLTEwem0yMCAwaDIwdjEwaC0yMHptMzAgMGgxMHYxMGgtMTB6bTQwIDBoNDB2MTBoLTQwem01MCAwaDEwdjEwaC0xMHpNNDAgMzQwaDEwdjMwSDQwem0yMCAwaDEwdjEwSDYwem0zMCAwaDMwdjEwSDkwem0xNDAgMGgzMHYxMGgtMzB6bTgwIDBoMTB2MjBoLTEwem0zMCAwaDEwdjQwaC0xMHptNzAgMGgzMHYxMGgtMzB6TTEwIDM1MGgzMHYxMEgxMHptODAgMGgxMHYxMEg5MHptMjAgMGgzMHYxMGgtMzB6bTUwIDBoMzB2MTBoLTMwem00MCAwaDEwdjEwMGgtMTB6bTIwIDBoMzB2MjBoLTMwem01MCAwaDQwdjEwaC00MHptNTAgMGgxMHYzMGgtMTB6bTQwIDBoMTB2NjBoLTEwem01MCAwaDIwdjEwaC0yMHptMzAgMGgxMHYxMGgtMTB6TTAgMzYwaDEwdjEwSDB6bTMwIDBoMTB2MTBIMzB6bTMwIDBoMTB2MTBINjB6bTIwIDBoMTB2ODBIODB6bTIwIDBoMTB2MzBoLTEwem0yMCAwaDIwdjIwaC0yMHptMzAgMGgxMHYxMGgtMTB6bTQwIDBoMTB2MjBoLTEwem0yMCAwaDEwdjEwaC0xMHptNDAgMGgxMHYyMGgtMTB6bTIwIDBoMjB2MjBoLTIwem0zMCAwaDEwdjEwaC0xMHptMzAgMGgxMHYxMGgtMTB6bTIwIDBoMTB2MjBoLTEwem0yMCAwaDQwdjEwaC00MHptNTAgMGgyMHYxMGgtMjB6TTkwIDM3MGgxMHYyMEg5MHptMjAgMGgxMHY0MGgtMTB6bTEzMCAwaDEwdjcwaC0xMHptMjAgMGgxMHY1MGgtMTB6bTMwIDBoMTB2MTBoLTEwem0xMTAgMGgzMHYxMGgtMzB6bTQwIDBoMTB2MTBoLTEwek0wIDM4MGg3MHYxMEgwem0xMzAgMGgxMHYxMGgtMTB6bTMwIDBoMTB2MzBoLTEwem02MCAwaDEwdjEwaC0xMHptODAgMGgyMHYyMGgtMjB6bTMwIDBoMTB2MzBoLTEwem01MCAwaDEwdjEwaC0xMHptMjAgMGgxMHY0MGgtMTB6bTIwIDBoMTB2MTBoLTEwek0wIDM5MGgxMHY2MEgwem02MCAwaDEwdjYwSDYwem02MCAwaDEwdjMwaC0xMHptMzAgMGgxMHYyMGgtMTB6bTQwIDBoMTB2MzBoLTEwem02MCAwaDEwdjMwaC0xMHptMjAgMGgxMHYyMGgtMTB6bTIwIDBoMTB2MjBoLTEwem02MCAwaDEwdjEwaC0xMHptODAgMGgyMHYxMGgtMjB6TTIwIDQwMGgzMHYzMEgyMHptNzAgMGgxMHY0MEg5MHptOTAgMGgxMHY0MGgtMTB6bTMwIDBoMzB2MTBoLTMwem05MCAwaDEwdjEwaC0xMHptNDAgMGgxMHYzMGgtMTB6bTMwIDBoMzB2MTBoLTMwem0tMjMwIDEwaDEwdjMwaC0xMHptMzAgMGgxMHYxMGgtMTB6bTExMCAwaDEwdjEwaC0xMHptMzAgMGgyMHYxMGgtMjB6bTYwIDBoMTB2MjBoLTEwem00MCAwaDMwdjEwaC0zMHptLTMxMCAxMGgyMHYxMGgtMjB6bTUwIDBoMjB2MTBoLTIwem0xMjAgMGgxMHYyMGgtMTB6bTMwIDBoMjB2MTBoLTIwem02MCAwaDEwdjEwaC0xMHptMjAgMGgxMHYxMGgtMTB6bTQwIDBoMTB2MTBoLTEwem0tMzEwIDEwaDIwdjEwaC0yMHptNDAgMGgxMHYyMGgtMTB6bTIwIDBoMTB2MjBoLTEwem00MCAwaDEwdjEwaC0xMHptODAgMGgxMHYxMGgtMTB6bTIwIDBoMjB2MjBoLTIwem00MCAwaDEwdjIwaC0xMHptNTAgMGgxMHYxMGgtMTB6bTMwIDBoMjB2MTBoLTIwek0xMCA0NDBoNTB2MTBIMTB6bTkwIDBoMTB2MTBoLTEwem0yMCAwaDIwdjEwaC0yMHptNDAgMGgxMHYxMGgtMTB6bTMwIDBoMTB2MTBoLTEwem00MCAwaDEwdjEwaC0xMHptMjAgMGgyMHYxMGgtMjB6bTMwIDBoMTB2MTBoLTEwem01MCAwaDIwdjEwaC0yMHptMzAgMGgxMHYxMGgtMTB6bTcwIDBoMTB2MTBoLTEweiIvPgo8L3N2Zz4K" style="width:240px;height:240px;display:block;margin-bottom:16px">
@@ -1796,6 +1847,8 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
 
         settings.toastDuration = getNum('vc-toastDuration');
         if (isNaN(settings.toastDuration)) settings.toastDuration = DEFAULT_SETTINGS.toastDuration;
+        var posSel = document.getElementById('vc-toastPosition');
+        settings.toastPosition = posSel ? posSel.value : DEFAULT_SETTINGS.toastPosition;
 
         settings.siteMemoryEnabled = getBool('vc-siteMemoryEnabled');
         settings.biliProgressEnabled = getBool('vc-biliProgressEnabled');
@@ -2115,9 +2168,13 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
         loadSettings();
         loadSiteSettings();
         _webAutoNextDisabled = settings.autoNextWebDisabled || false;
+        _allShortcutKeys = null;
+        _initReady = true;
 
         hijackPlaybackRate();
         hackAttachShadow();
+
+        window.addEventListener('keydown', onKeyDown, true);
 
         if (hasAnyVideo()) {
             tryActivate();
@@ -2138,14 +2195,8 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
         document.addEventListener('fullscreenchange', function () {
             var host = document.fullscreenElement || document.body;
             if (_toastEl && _toastEl.parentNode !== host) host.appendChild(_toastEl);
-            if (host && host.tagName === 'VIDEO') host = host.parentElement;
-            var pnl = document.getElementById('vc-settings-panel');
-            if (pnl && pnl.parentNode !== host) {
-                host.appendChild(pnl);
-            }
         });
 
-        document.addEventListener('keydown', onKeyDown, true);
         document.addEventListener('mousedown', function(e) {
             if (!_panVideo || e.button !== 0) return;
             if (!_panVideo.contains(e.target) && e.target !== _panVideo) return;
