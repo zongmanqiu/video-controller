@@ -24,47 +24,6 @@
     // 仅顶层页面运行，避免 iframe 内重复执行
     if (window.top !== window.self) return;
 
-    var _initReady = false;
-    var _allShortcutKeys = null;
-    function _collectShortcutKeys() {
-        if (_allShortcutKeys) return _allShortcutKeys;
-        _allShortcutKeys = [
-            settings.togglePlay, settings.speedUp, settings.speedDown,
-            settings.forward, settings.backward, settings.frameForward, settings.frameBackward,
-            settings.volumeUp, settings.volumeDown, settings.brightnessUp, settings.brightnessDown,
-            settings.fullscreen, settings.screenshot, settings.rotateKey, settings.flipKey,
-            settings.screenFullKey, settings.pipKey, settings.cleanKey,
-            settings.zoomUpKey, settings.zoomDownKey, settings.panKey,
-            settings.openSettingsKey,
-            settings.quickSpeed1Key, settings.quickSpeed2Key, settings.quickSpeed3Key, settings.quickSpeed4Key
-        ].filter(function(k) { return k && k !== ''; });
-        return _allShortcutKeys;
-    }
-    function _earlyKeyHandler(e) {
-        if (e.metaKey || e.repeat) return;
-        var combo = '';
-        if (e.ctrlKey) combo += 'Ctrl+';
-        if (e.altKey) combo += 'Alt+';
-        combo += e.key;
-        if (!_initReady) {
-            var keys = _collectShortcutKeys();
-            for (var i = 0; i < keys.length; i++) {
-                if (combo === keys[i]) {
-                    e.preventDefault();
-                    e.stopImmediatePropagation();
-                    return;
-                }
-            }
-            return;
-        }
-        if (settings.openSettingsKey && combo === settings.openSettingsKey) {
-            e.preventDefault();
-            e.stopImmediatePropagation();
-            openSettings();
-        }
-    }
-    window.addEventListener('keydown', _earlyKeyHandler, true);
-
     const DEFAULT_SETTINGS = {
         togglePlay: ' ',
         speedUp: 'w',
@@ -1125,7 +1084,21 @@
 
     function isTypingElement(el) {
         const active = document.activeElement;
-        if (active && isEditableElement(active)) return true;
+        if (active) {
+            if (isEditableElement(active)) return true;
+            if (active.shadowRoot) {
+                const shadowActive = active.shadowRoot.activeElement;
+                if (shadowActive && isEditableElement(shadowActive)) return true;
+            }
+        }
+        if (window._vcShadowDomList_) {
+            for (let i = 0; i < window._vcShadowDomList_.length; i++) {
+                const sr = window._vcShadowDomList_[i];
+                try {
+                    if (sr.activeElement && isEditableElement(sr.activeElement)) return true;
+                } catch (_) {}
+            }
+        }
         try {
             const sel = window.getSelection();
             if (sel && sel.anchorNode) {
@@ -1212,8 +1185,11 @@
             existing.remove();
             return;
         }
+        const host = document.createElement('div');
+        host.id = 'vc-settings-panel';
+        host.style.cssText = 'all: initial; position: fixed; top: 0; left: 0; width: 0; height: 0; z-index: 2147483647; pointer-events: none;';
+        const shadow = host.attachShadow({ mode: 'open' });
         const panel = document.createElement('div');
-        panel.id = 'vc-settings-panel';
         panel.style.cssText = [
             'box-sizing: border-box;',
             'position: fixed; top: 50%; left: 50%;',
@@ -1225,7 +1201,8 @@
             'display: flex; flex-direction: column;',
             'font-size: 13px; line-height: 1.4;',
             'font-family: Arial, "Microsoft YaHei", sans-serif;',
-            'color: #333;'
+            'color: #333;',
+            'pointer-events: auto;'
         ].join('');
         var html = buildSettingsHTML();
         if (typeof trustedTypes !== 'undefined' && trustedTypes.createPolicy) {
@@ -1238,7 +1215,11 @@
         } else {
             panel.innerHTML = html;
         }
-        document.body.appendChild(panel);
+        panel.id = 'vc-settings-panel';
+        shadow.appendChild(panel);
+        var mountHost = document.fullscreenElement || document.body;
+        if (mountHost && mountHost.tagName === 'VIDEO') mountHost = mountHost.parentElement;
+        mountHost.appendChild(host);
         bindSettingsEvents(panel);
     }
 
@@ -1324,8 +1305,8 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
       <div class="vc-item"><span class="vc-lbl">纯净模式</span><span class="vc-num"></span><span class="vc-ctl"><input type="text" id="vc-cleanKey" class="vc-key-input" value="${esc(displayKey(s.cleanKey))}" readonly placeholder="点击后按键"></span></div>
       <div class="vc-item"><span class="vc-lbl">进入设置</span><span class="vc-num"></span><span class="vc-ctl"><input type="text" id="vc-openSettingsKey" class="vc-key-input" value="${esc(displayKey(s.openSettingsKey))}" readonly placeholder="点击后按键"></span></div>
       <div class="vc-item"><span class="vc-lbl">提示时长</span><span class="vc-num" style="font-size:11px;color:#999">(0=关闭)</span><span class="vc-ctl"><input type="number" id="vc-toastDuration" value="${s.toastDuration}" min="0" max="30000" step="500"></span></div>
-      <div style="display:grid;grid-template-columns:52px 60px 1fr;gap:4px;align-items:center;margin-bottom:5px;height:28px;font-size:13px">
-        <span style="font-weight:bold;color:#444">提示位置</span><span></span>
+      <div style="display:grid;grid-template-columns:52px 60px 1fr;gap:4px;align-items:center;margin-bottom:0;height:28px;font-size:13px">
+        <span style="color:#444">提示位置</span><span></span>
         <select id="vc-toastPosition" style="height:25px;box-sizing:border-box;padding:4px 8px;border:1px solid #64b5f6;border-radius:4px;font-size:13px;background:#90caf9;color:#0d47a1;cursor:pointer;text-align:center;max-width:180px;-webkit-appearance:none;-moz-appearance:none;appearance:none">
           <option value="top-left" style="background:#e3f2fd;color:#1565c0"${s.toastPosition==='top-left'?' selected':''}>左上</option>
           <option value="top-center" style="background:#e3f2fd;color:#1565c0"${s.toastPosition==='top-center'?' selected':''}>中上</option>
@@ -1390,15 +1371,15 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
       </div>
       <div style="display:grid;grid-template-columns:52px 60px 1fr;gap:4px;align-items:center;margin-bottom:5px;height:28px;font-size:13px;color:#333">
         <span style="color:#555">区间起点</span><span></span>
-        <input id="vc-ls" style="padding:4px 8px;border-radius:4px;font-size:12px;text-align:center;width:100%;max-width:180px;box-sizing:border-box" placeholder="时:分:秒">
+        <input id="vc-ls" style="padding:4px 8px;border-radius:4px;font-size:13px;text-align:center;width:100%;max-width:180px;box-sizing:border-box" placeholder="时:分:秒">
       </div>
       <div style="display:grid;grid-template-columns:52px 60px 1fr;gap:4px;align-items:center;margin-bottom:5px;height:28px;font-size:13px;color:#333">
         <span style="color:#555">区间终点</span><span></span>
-        <input id="vc-le" style="padding:4px 8px;border-radius:4px;font-size:12px;text-align:center;width:100%;max-width:180px;box-sizing:border-box" placeholder="时:分:秒">
+        <input id="vc-le" style="padding:4px 8px;border-radius:4px;font-size:13px;text-align:center;width:100%;max-width:180px;box-sizing:border-box" placeholder="时:分:秒">
       </div>
       <div style="display:grid;grid-template-columns:52px 60px 1fr;gap:4px;align-items:center;margin-bottom:0;height:28px;font-size:13px;color:#333">
-        <span style="color:#555">循环次数</span><span style="color:#999;font-size:12px">(0=无限)</span>
-        <input id="vc-lc" type="number" style="padding:4px 8px;border-radius:4px;font-size:12px;text-align:center;width:100%;max-width:180px;box-sizing:border-box" value="1">
+        <span style="color:#555">循环次数</span><span style="color:#999;font-size:11px">(0=无限)</span>
+        <input id="vc-lc" type="number" style="padding:4px 8px;border-radius:4px;font-size:13px;text-align:center;width:100%;max-width:180px;box-sizing:border-box" value="1">
       </div>
     </div>
   </div>
@@ -1414,8 +1395,8 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
   </div>
   <div class="vc-part">
     <div class="vc-item"><span class="vc-lbl" style="font-weight:bold">站点记忆</span><span class="vc-num"></span><span class="vc-ctl"><span class="vc-dual" id="vc-siteMemoryEnabled" data-value="${s.siteMemoryEnabled ? '1' : '0'}" style="display:flex;gap:0;width:100%;max-width:180px"><button type="button" style="padding:0;line-height:25px;border:1px solid ${s.siteMemoryEnabled ? '#64b5f6' : '#90caf9'};border-radius:4px 0 0 4px;background:${s.siteMemoryEnabled ? '#90caf9' : '#e3f2fd'};color:${s.siteMemoryEnabled ? '#0d47a1' : '#1565c0'};cursor:pointer;font-size:13px;flex:1">开启</button><button type="button" style="padding:0;line-height:25px;border:1px solid ${s.siteMemoryEnabled ? '#90caf9' : '#64b5f6'};border-left:none;border-radius:0 4px 4px 0;background:${s.siteMemoryEnabled ? '#e3f2fd' : '#90caf9'};color:${s.siteMemoryEnabled ? '#1565c0' : '#0d47a1'};cursor:pointer;font-size:13px;flex:1">关闭</button></span></span></div>
-    <div style="display:grid;grid-template-columns:52px 60px 1fr;gap:4px;align-items:center;height:28px;margin-top:1px;margin-bottom:6px"><span style="font-size:13px;color:#444">禁止站点</span><span></span><button type="button" id="vc-addNomemory" style="padding:0 8px;line-height:22px;border:1px solid #ff9800;border-radius:4px;background:#ffd54f;color:#3e2723;cursor:pointer;font-size:12px;white-space:nowrap;width:100%;box-sizing:border-box">禁止当前网站</button></div>
-    <textarea id="vc-noMemorySites" style="box-sizing:border-box;width:100%;height:125px;padding:4px 6px;border-radius:4px;font-size:11px;color:#333;resize:none" placeholder="每行一个域名，如&#10;www.example.com&#10;v.example.com"></textarea>
+    <div style="display:grid;grid-template-columns:52px 60px 1fr;gap:4px;align-items:center;height:28px;margin-top:1px;margin-bottom:6px"><span style="font-size:13px;color:#444">禁止站点</span><span></span><button type="button" id="vc-addNomemory" style="padding:0 8px;line-height:22px;border:1px solid #ff9800;border-radius:4px;background:#ffd54f;color:#3e2723;cursor:pointer;font-size:13px;white-space:nowrap;width:100%;box-sizing:border-box">禁止当前网站</button></div>
+    <textarea id="vc-noMemorySites" style="box-sizing:border-box;width:100%;height:125px;padding:4px 6px;border-radius:4px;font-size:13px;color:#333;resize:none" placeholder="每行一个域名，如&#10;www.example.com&#10;v.example.com"></textarea>
   </div>
 </div></div>
 <div id="vc-page4" style="display:none">
@@ -1443,11 +1424,11 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
 </div></div></div>
 <div style="display:flex;gap:12px;margin-top:8px">
   <span style="display:flex;flex:1;min-width:0">
-    <button id="vc-pg1" style="flex:1;padding:6px 0;min-width:0;border:1px solid #64b5f6;border-right:none;border-top:none;border-radius:0 0 0 6px;background:#90caf9;color:#0d47a1;cursor:pointer;font-size:12px;text-align:center;position:relative;z-index:1">基础</button>
-    <button id="vc-pg2" style="flex:1;padding:6px 0;min-width:0;border:1px solid #90caf9;border-right:none;border-left:none;border-top:none;background:#e3f2fd;color:#1565c0;cursor:pointer;font-size:12px;text-align:center;position:relative">工具</button>
-    <button id="vc-pg3" style="flex:1;padding:6px 0;min-width:0;border:1px solid #90caf9;border-right:none;border-left:none;border-top:none;background:#e3f2fd;color:#1565c0;cursor:pointer;font-size:12px;text-align:center;position:relative">自动</button>
-    <button id="vc-pg5" style="flex:1;padding:6px 0;min-width:0;border:1px solid #90caf9;border-right:none;border-left:none;border-top:none;background:#e3f2fd;color:#1565c0;cursor:pointer;font-size:12px;text-align:center;position:relative">站点</button>
-    <button id="vc-pg4" style="flex:1;padding:6px 0;min-width:0;border:1px solid #90caf9;border-left:none;border-top:none;border-radius:0 0 6px 0;background:#e3f2fd;color:#1565c0;cursor:pointer;font-size:12px;text-align:center;position:relative">关于</button>
+    <button id="vc-pg1" style="flex:1;padding:6px 0;min-width:0;border:1px solid #64b5f6;border-right:none;border-top:none;border-radius:0 0 0 6px;background:#90caf9;color:#0d47a1;cursor:pointer;font-size:13px;text-align:center;position:relative;z-index:1">基础</button>
+    <button id="vc-pg2" style="flex:1;padding:6px 0;min-width:0;border:1px solid #90caf9;border-right:none;border-left:none;border-top:none;background:#e3f2fd;color:#1565c0;cursor:pointer;font-size:13px;text-align:center;position:relative">工具</button>
+    <button id="vc-pg3" style="flex:1;padding:6px 0;min-width:0;border:1px solid #90caf9;border-right:none;border-left:none;border-top:none;background:#e3f2fd;color:#1565c0;cursor:pointer;font-size:13px;text-align:center;position:relative">自动</button>
+    <button id="vc-pg5" style="flex:1;padding:6px 0;min-width:0;border:1px solid #90caf9;border-right:none;border-left:none;border-top:none;background:#e3f2fd;color:#1565c0;cursor:pointer;font-size:13px;text-align:center;position:relative">站点</button>
+    <button id="vc-pg4" style="flex:1;padding:6px 0;min-width:0;border:1px solid #90caf9;border-left:none;border-top:none;border-radius:0 0 6px 0;background:#e3f2fd;color:#1565c0;cursor:pointer;font-size:13px;text-align:center;position:relative">关于</button>
   </span>
   <span style="flex:1;min-width:0;display:flex;justify-content:flex-end;gap:8px">
     <button class="vc-btn vc-btn-reset" id="vc-reset">恢复默认</button>
@@ -2168,13 +2149,9 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
         loadSettings();
         loadSiteSettings();
         _webAutoNextDisabled = settings.autoNextWebDisabled || false;
-        _allShortcutKeys = null;
-        _initReady = true;
 
         hijackPlaybackRate();
         hackAttachShadow();
-
-        window.addEventListener('keydown', onKeyDown, true);
 
         if (hasAnyVideo()) {
             tryActivate();
@@ -2195,8 +2172,14 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
         document.addEventListener('fullscreenchange', function () {
             var host = document.fullscreenElement || document.body;
             if (_toastEl && _toastEl.parentNode !== host) host.appendChild(_toastEl);
+            if (host && host.tagName === 'VIDEO') host = host.parentElement;
+            var pnl = document.getElementById('vc-settings-panel');
+            if (pnl && pnl.parentNode !== host) {
+                host.appendChild(pnl);
+            }
         });
 
+        document.addEventListener('keydown', onKeyDown, true);
         document.addEventListener('mousedown', function(e) {
             if (!_panVideo || e.button !== 0) return;
             if (!_panVideo.contains(e.target) && e.target !== _panVideo) return;
