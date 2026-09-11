@@ -2,7 +2,7 @@
 // @name         视频控制器
 // @namespace    video-controller
 // @description  120+KB的极简视频控制器，适配HTML5播放器。支持倍速（0.25x–16x）、音量增强（最高5x）、亮度增强（最高3x）。常规快捷键操作：倍速/快进/音量/逐帧/亮度/画面缩放。此外，支持屏幕全屏/网页全屏/旋转90°/水平翻转/画面拖动/截图/画中画/纯净模式，支持自动记忆网站设置/全局自动设置/色彩模式更改/区间循环播放。
-// @version      1.2.6
+// @version      1.2.7
 // @license      MIT
 // @author       Qiu Zongman
 // @homepageURL  https://gitee.com/qiuzongman/video-controller
@@ -465,8 +465,97 @@
         }
     }
 
+    var _vcWebFullStyle = null;
     function toggleScreenFull(video) {
-        var btn = document.querySelector('.bpx-player-ctrl-web,.dplayer-full-icon[data-name="web"],.vjs-remaining-time,.plyr__control[data-plyr="fullscreen"][data-size="small"],[aria-label="网页全屏"],[title="网页全屏"],.ytp-size-button,[aria-label="Theater mode"],[aria-label="剧场模式"]');
+        var isYoutube = location.hostname === 'www.youtube.com';
+        if (isYoutube) {
+            if (video._vcWebFull) {
+                var zTopNodes = video._vcWebFullZTopNodes || [];
+                zTopNodes.forEach(function(n) { n.classList.remove('vc-fp-zTop'); });
+                var innerNodes = video._vcWebFullInnerNodes || [];
+                innerNodes.forEach(function(n) { n.classList.remove('vc-fp-innerBox'); });
+                var fillNodes = video._vcWebFullFillNodes || [];
+                fillNodes.forEach(function(n) { n.classList.remove('vc-fp-fillBox'); n.classList.remove('vc-fp-absCover'); });
+                var player = document.querySelector('#movie_player') || document.querySelector('#ytd-player');
+                if (player) { player.classList.remove('vc-fp-wrapper'); player.style.removeProperty('--vc-fp-vw'); player.style.removeProperty('--vc-fp-vh'); }
+                document.documentElement.classList.remove('vc-fp-root');
+                document.body.classList.remove('vc-fp-body');
+                document.documentElement.style.overflow = '';
+                if (_vcWebFullStyle) { _vcWebFullStyle.remove(); _vcWebFullStyle = null; }
+                if (video._vcWebFullSyncHandler) { window.removeEventListener('resize', video._vcWebFullSyncHandler, true); window.visualViewport?.removeEventListener('resize', video._vcWebFullSyncHandler); video._vcWebFullSyncHandler = null; }
+                video._vcWebFull = false;
+                video._vcWebFullZTopNodes = null;
+                video._vcWebFullInnerNodes = null;
+                video._vcWebFullFillNodes = null;
+                video._vcWebFullSyncVp = null;
+                setTimeout(function() { window.dispatchEvent(new Event('resize')); }, 50);
+                Toast('退出网页全屏');
+            } else {
+                if (document.fullscreenElement) {
+                    document.exitFullscreen().then(function() {
+                        setTimeout(function() { toggleScreenFull(video); }, 100);
+                    }).catch(function() {});
+                    return;
+                }
+                var player = document.querySelector('#movie_player') || document.querySelector('#ytd-player');
+                if (!player) { Toast('未找到播放器'); return; }
+                if (!_vcWebFullStyle) {
+                    _vcWebFullStyle = document.createElement('style');
+                    _vcWebFullStyle.textContent = '.vc-fp-root,.vc-fp-body{overflow:hidden!important;scrollbar-width:none}.vc-fp-root::-webkit-scrollbar,.vc-fp-body::-webkit-scrollbar{display:none}.vc-fp-body .vc-fp-zTop{position:relative!important;z-index:2147483646!important;transform:none!important;contain:none!important;perspective:none!important;filter:none!important;backdrop-filter:none!important}.vc-fp-wrapper{display:block!important;position:fixed!important;inset:0!important;width:var(--vc-fp-vw,100vw)!important;height:var(--vc-fp-vh,100vh)!important;min-width:var(--vc-fp-vw,100vw)!important;min-height:var(--vc-fp-vh,100vh)!important;max-width:var(--vc-fp-vw,100vw)!important;max-height:var(--vc-fp-vh,100vh)!important;padding:0!important;margin:0!important;background:#000!important;z-index:2147483647!important;overflow:hidden!important;transform:none!important;contain:none!important;aspect-ratio:auto!important}.vc-fp-wrapper .vc-fp-innerBox,.vc-fp-wrapper .vc-fp-fillBox{width:100%!important;height:100%!important;min-width:0!important;min-height:0!important;max-width:100%!important;max-height:100%!important;margin:0!important;padding:0!important;aspect-ratio:auto!important;box-sizing:border-box!important;flex:1 1 auto!important}.vc-fp-wrapper .vc-fp-absCover{position:absolute!important;inset:0!important}.vc-fp-wrapper video.vc-fp-innerBox,.vc-fp-wrapper video.vc-fp-fillBox{object-fit:contain!important;background:#000!important}.vc-fp-body #masthead-container,.vc-fp-body ytd-masthead,.vc-fp-body #secondary,.vc-fp-body #below,.vc-fp-body ytd-playlist-panel-renderer,.vc-fp-body #comments,.vc-fp-body #panels{display:none!important;opacity:0!important;visibility:hidden!important}.vc-fp-body #page-manager,.vc-fp-body ytd-app,.vc-fp-body #columns,.vc-fp-body #primary{margin:0!important;padding:0!important;top:0!important}.vc-fp-body ytd-app,.vc-fp-body #page-manager,.vc-fp-body ytd-watch-flexy,.vc-fp-body #player-theater-container,.vc-fp-body #full-bleed-container{contain:none!important;transform:none!important;perspective:none!important;filter:none!important;backdrop-filter:none!important}.vc-fp-body #player-theater-container,.vc-fp-body #full-bleed-container{position:fixed!important;top:0!important;left:0!important;width:100vw!important;height:100vh!important;max-height:100vh!important;min-height:100vh!important;z-index:2147483644!important;background:#000!important;margin:0!important;padding:0!important}';
+                    document.head.appendChild(_vcWebFullStyle);
+                }
+                var zTopNodes = [];
+                var zp = player.parentElement;
+                while (zp && zp !== document.body) { zTopNodes.push(zp); zp = zp.parentElement; }
+                zTopNodes.forEach(function(n) { n.classList.add('vc-fp-zTop'); });
+                var innerNodes = [];
+                var ip = video;
+                while (ip && ip !== player) { if (ip.nodeType === 1) innerNodes.push(ip); ip = ip.parentElement; }
+                innerNodes.forEach(function(n) { n.classList.add('vc-fp-innerBox'); });
+                var fillNodes = [];
+                var playerRect = player.getBoundingClientRect();
+                var playerArea = playerRect.width * playerRect.height;
+                var candidates = player.querySelectorAll('video, canvas, iframe, embed, object, [class], [id]');
+                for (var ci = 0; ci < candidates.length && fillNodes.length < 120; ci++) {
+                    var cn = candidates[ci];
+                    if (cn === player) continue;
+                    var cr = cn.getBoundingClientRect();
+                    var ca = cr.width * cr.height;
+                    if (ca >= Math.max(100, playerArea * 0.35) && cr.width >= Math.max(80, playerRect.width * 0.35) && cr.height >= Math.max(60, playerRect.height * 0.35)) {
+                        fillNodes.push(cn);
+                        cn.classList.add('vc-fp-fillBox');
+                        var cs = getComputedStyle(cn);
+                        if (cs.position === 'absolute' || cs.position === 'fixed') cn.classList.add('vc-fp-absCover');
+                    }
+                }
+                video._vcWebFullZTopNodes = zTopNodes;
+                video._vcWebFullInnerNodes = innerNodes;
+                video._vcWebFullFillNodes = fillNodes;
+                document.documentElement.classList.add('vc-fp-root');
+                document.body.classList.add('vc-fp-body');
+                document.documentElement.style.overflow = 'hidden';
+                player.classList.add('vc-fp-wrapper');
+                function _vcFpSyncVp() {
+                    var vv = window.visualViewport;
+                    var vw = Math.round(vv?.width || window.innerWidth || document.documentElement.clientWidth || 0);
+                    var vh = Math.round(vv?.height || window.innerHeight || document.documentElement.clientHeight || 0);
+                    if (vw) player.style.setProperty('--vc-fp-vw', vw + 'px');
+                    if (vh) player.style.setProperty('--vc-fp-vh', vh + 'px');
+                }
+                _vcFpSyncVp();
+                video._vcWebFullSyncVp = _vcFpSyncVp;
+                video._vcWebFullSyncHandler = function() { _vcFpSyncVp(); setTimeout(function() { window.dispatchEvent(new Event('resize')); }, 60); };
+                window.addEventListener('resize', video._vcWebFullSyncHandler, true);
+                window.visualViewport?.addEventListener('resize', video._vcWebFullSyncHandler);
+                video._vcWebFull = true;
+                setTimeout(function() { window.dispatchEvent(new Event('resize')); }, 50);
+                setTimeout(function() { window.dispatchEvent(new Event('resize')); }, 80);
+                setTimeout(function() { window.dispatchEvent(new Event('resize')); }, 240);
+                Toast('进入网页全屏');
+            }
+            return;
+        }
+        var btn = document.querySelector('.bpx-player-ctrl-web,.dplayer-full-icon[data-name="web"],.vjs-remaining-time,.plyr__control[data-plyr="fullscreen"][data-size="small"],[aria-label="网页全屏"],[title="网页全屏"]');
         if (btn) { btn.click(); return; }
         if (video._vcSFParent) {
             var wrap = video._vcSFParent;
@@ -1111,9 +1200,18 @@
         return false;
     }
 
+    var _vcHandledKeys = new Set();
     function onKeyDown(e) {
         if (isTypingElement(e.target)) {
             return;
+        }
+        if (e.key === 'Escape') {
+            var _escV = getActiveVideo();
+            if (_escV && _escV._vcWebFull) {
+                toggleScreenFull(_escV);
+                e.preventDefault();
+                return;
+            }
         }
         if (e.metaKey) return;
         if (onKeyDown._lk === e.key && Date.now() - onKeyDown._lt < 150) return;
@@ -1145,7 +1243,7 @@
         if (m(settings.brightnessUp)) { changeBrightness(video, settings.brightnessStep); handled = true; }
         if (m(settings.brightnessDown)) { changeBrightness(video, -settings.brightnessStep); handled = true; }
         if (m(settings.fullscreen)) {
-            var fsBtn = document.querySelector('.bpx-player-ctrl-full,.dplayer-full-icon,.vjs-fullscreen-control,.jw-icon-fullscreen,.plyr__control[data-plyr="fullscreen"],.mejs-fullscreen-button,.video-js .vjs-fullscreen-control,[aria-label="全屏"],[aria-label="Fullscreen"],[title="全屏"],[title="Fullscreen"]');
+            var fsBtn = document.querySelector('.ytp-fullscreen-button,.bpx-player-ctrl-full,.dplayer-full-icon,.vjs-fullscreen-control,.jw-icon-fullscreen,.plyr__control[data-plyr="fullscreen"],.mejs-fullscreen-button,.video-js .vjs-fullscreen-control,[aria-label="全屏"],[aria-label="Fullscreen"],[title="全屏"],[title="Fullscreen"]');
             if (fsBtn) { fsBtn.click(); handled = true; }
             else {
                 var wasFull = !!document.fullscreenElement;
@@ -1176,8 +1274,20 @@
         if (handled) {
             e.preventDefault();
             e.stopImmediatePropagation();
+            e.stopPropagation();
+            _vcHandledKeys.add(e.key);
         }
     }
+    function onKeyUp(e) {
+        if (_vcHandledKeys.has(e.key)) {
+            _vcHandledKeys.delete(e.key);
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            e.stopPropagation();
+        }
+    }
+    window.addEventListener('keydown', onKeyDown, true);
+    window.addEventListener('keyup', onKeyUp, true);
 
     function openSettings() {
         const existing = document.getElementById('vc-settings-panel');
@@ -1400,7 +1510,7 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
   </div>
 </div></div>
 <div id="vc-page4" style="display:none">
-<div style="font-weight:bold;font-size:13px;color:#444;margin-bottom:5px;height:28px;line-height:28px">视频控制器 v1.2.6</div>
+<div style="font-weight:bold;font-size:13px;color:#444;margin-bottom:5px;height:28px;line-height:28px">视频控制器 v1.2.7</div>
 <div style="display:grid;grid-template-columns:52px 1fr;column-gap:6px;row-gap:2px">
 <span style="color:#555">作者</span><span><a href="https://space.bilibili.com/423767625" target="_blank" style="color:#1a73e8">邱宗满</a></span>
 <span style="color:#555">邮箱</span><span>qiuzongman@foxmail.com</span>
@@ -1828,7 +1938,7 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
 
         settings.toastDuration = getNum('vc-toastDuration');
         if (isNaN(settings.toastDuration)) settings.toastDuration = DEFAULT_SETTINGS.toastDuration;
-        var posSel = document.getElementById('vc-toastPosition');
+        var posSel = panel.querySelector('#vc-toastPosition');
         settings.toastPosition = posSel ? posSel.value : DEFAULT_SETTINGS.toastPosition;
 
         settings.siteMemoryEnabled = getBool('vc-siteMemoryEnabled');
@@ -2179,7 +2289,6 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
             }
         });
 
-        document.addEventListener('keydown', onKeyDown, true);
         document.addEventListener('mousedown', function(e) {
             if (!_panVideo || e.button !== 0) return;
             if (!_panVideo.contains(e.target) && e.target !== _panVideo) return;
