@@ -71,10 +71,6 @@
 | 快退 | ← |
 | 固定倍速 1-4 | 1 / 2 / 3 / 4 |
 
-## 开发
-
-完全使用 [Reasonix](https://reasonix.io/) + [Deepseek](https://www.deepseek.com/) 的 AI 工具开发。
-
 ## 许可证
 
 MIT
